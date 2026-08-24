@@ -92,12 +92,13 @@ export async function loadGameData() {
     try { return await fetchJSON(path); }
     catch (e) { errors.push(e.message); return fallback; }
   };
-  const [characters, fragments, effectMap, tags, config] = await Promise.all([
+  const [characters, fragments, effectMap, tags, config, meta] = await Promise.all([
     load('./game_data/characters.json', {}),
     load('./game_data/fragments.json', {}),
     load('./game_data/effect_map.json', { entries: {}, _stat_keywords: {} }),
     load('./game_data/tags.json', {}),
-    load('./game_data/config.json', { known_rarities: [] }),
+    load('./game_data/config.json', { known_rarities: [], asset_base: '' }),
+    load('./game_data/meta.json', null),
   ]);
   const overrides = (await idbGet('game_overrides')) || emptyOverrides();
   const merge = (fileData, over) => {
@@ -114,6 +115,7 @@ export async function loadGameData() {
     tags: merge(tags, overrides.tags),
     effectMap,
     config,
+    meta,
     errors,
   };
 }
