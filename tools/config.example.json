@@ -1,0 +1,12 @@
+{
+  "_comment": [
+    "tools/update_data.mjs の設定。このファイルを tools/config.json にコピーして使う。",
+    "config.json は参照サイトのURLを含むためコミットしない（.gitignore 済み）。",
+    "list_url … 参照サイトのキャラ一覧ページのURL",
+    "character_ids … 取り込むキャラの内部ID。空配列なら一覧の全キャラを取り込む",
+    "利用は個人利用の範囲に留め、参照サイトの利用規約に従うこと。"
+  ],
+  "list_url": "https://<参照サイト>/characters",
+  "character_ids": [738],
+  "user_agent": "personal-fragment-tool (individual use)"
+}

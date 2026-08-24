@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "外部由来データ（DESIGN.md §1-5 / §3-1）。いつ消して再取得してもよい。",
+    "base_stats は Lv5000 の限界ステータス（合計ステ）。ブースト値は個人差があるので my_data 側に置く。",
+    "名前は表示専用。参照は必ず ID で行う（§1-2）。",
+    "id が 999000 番台のものは動作確認用サンプル。取り込みや手入力で上書き・削除してよい。"
+  ],
+  "738": {
+    "id": 738,
+    "card_no": "DBL98-01L",
+    "name": "超サイヤ人ゴッドSS界王拳 孫悟空",
+    "element": "PUR",
+    "rarity": "LEGEND",
+    "tags": [7, 1, 40, 45, 56, 9140, 10000, 12004, 13002, 15002, 20018, 50010],
+    "base_stats": {
+      "hp": 0, "strike_atk": 0, "blast_atk": 0,
+      "strike_def": 0, "blast_def": 0, "critical": 0, "ki_recovery": 0
+    }
+  },
+  "999001": {
+    "id": 999001,
+    "card_no": "DBL81-04S",
+    "name": "超サイヤ人4 孫悟空（検算サンプル）",
+    "element": "GRN",
+    "rarity": "SPARKING",
+    "tags": [7, 1, 50010],
+    "base_stats": {
+      "hp": 0, "strike_atk": 273617, "blast_atk": 0,
+      "strike_def": 0, "blast_def": 0, "critical": 0, "ki_recovery": 0
+    }
+  }
+}

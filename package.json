@@ -1,0 +1,11 @@
+{
+  "name": "dbl-fragment-optimizer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ドラゴンボールレジェンズのフラグメント配分を最適化する個人用PWA",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "serve": "node tools/serve.mjs"
+  }
+}

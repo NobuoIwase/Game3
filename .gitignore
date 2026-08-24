@@ -1,0 +1,4 @@
+node_modules/
+tools/config.json
+game_data/snapshots/
+.DS_Store
