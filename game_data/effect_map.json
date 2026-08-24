@@ -85,6 +85,8 @@
     "必殺技ダメージ":     { "other": true },
     "究極技ダメージ":     { "other": true },
     "バニシングゲージ回復速度": { "other": true },
-    "自爆ダメージ":       { "other": true }
+    "自爆ダメージ":       { "other": true },
+    "に対する与ダメージ": { "other": true },
+    "味方の自爆による与ダメージ": { "other": true }
   }
 }

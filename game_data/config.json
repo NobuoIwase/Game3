@@ -7,5 +7,8 @@
     "空の場合はレアリティチェックを行わない。"
   ],
   "asset_base": "https://jp.dblegends.net",
-  "known_rarities": []
+  "known_rarities": [
+    "iron", "bronze", "silver", "gold", "platinum", "unique", "event",
+    "awakenedbronze", "awakenedsilver", "awakenedgold", "awakenedunique"
+  ]
 }

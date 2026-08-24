@@ -18,6 +18,7 @@
   --fr-iron: #7d838a; --fr-bronze: #b0793f; --fr-silver: #aab4bd;
   --fr-gold: #d9a93c; --fr-awakenedgold: #e8863c; --fr-platinum: #b8d8e8;
   --fr-unique: #b06de0; --fr-event: #5fb96a; --fr-rainbow: #d76fd0;
+  --fr-awakenedbronze: #cd8a4a; --fr-awakenedsilver: #c8d4de; --fr-awakenedunique: #cf8af0;
   --fr-default: #5a5d75;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -204,6 +205,9 @@ td.num { font-variant-numeric: tabular-nums; }
 .frag-slot.fr-silver { border-color: var(--fr-silver); } .frag-slot.fr-iron { border-color: var(--fr-iron); }
 .frag-slot.fr-bronze { border-color: var(--fr-bronze); } .frag-slot.fr-event { border-color: var(--fr-event); }
 .frag-slot.fr-rainbow { border-color: var(--fr-rainbow); }
+.frag-slot.fr-awakenedbronze { border-color: var(--fr-awakenedbronze); }
+.frag-slot.fr-awakenedsilver { border-color: var(--fr-awakenedsilver); }
+.frag-slot.fr-awakenedunique { border-color: var(--fr-awakenedunique); }
 
 /* ============ フラグメントグリッド ============ */
 .frag-grid {
@@ -221,6 +225,9 @@ td.num { font-variant-numeric: tabular-nums; }
 .frag-tile.fr-silver { border-color: var(--fr-silver); } .frag-tile.fr-iron { border-color: var(--fr-iron); }
 .frag-tile.fr-bronze { border-color: var(--fr-bronze); } .frag-tile.fr-event { border-color: var(--fr-event); }
 .frag-tile.fr-rainbow { border-color: var(--fr-rainbow); }
+.frag-tile.fr-awakenedbronze { border-color: var(--fr-awakenedbronze); }
+.frag-tile.fr-awakenedsilver { border-color: var(--fr-awakenedsilver); }
+.frag-tile.fr-awakenedunique { border-color: var(--fr-awakenedunique); }
 .frag-tile .count-badge {
   position: absolute; bottom: 1px; right: 1px; font-size: 10px; font-weight: 800;
   background: rgba(10,10,16,.85); color: var(--accent); border-radius: 5px; padding: 0 4px;

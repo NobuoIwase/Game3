@@ -163,7 +163,7 @@ export function parseAbilityText(text, tagNameToId) {
 
       // 1行に複数の効果が「&」で連結されることがある（例: ZENKAIアビIII/IV）。
       // 各節の形式: [バトル時、][「タグ：X」または「…」かつ「…」の]<効果名>[を]<値>%[アップ]
-      const clauseRe = /^(?:バトル時、)?((?:「[^」]+」(?:または|かつ)?)*)の?(.+?)を?\s*\+?([\d.]+)\s*[%％](?:アップ)?$/;
+      const clauseRe = /^(?:バトル時、)?((?:「[^」]+」(?:または|かつ)?)*)の?(.+?)[をが]?\s*\+?([\d.]+)\s*[%％](?:アップ)?$/;
       const clauses = body.split('&').map((s) => s.trim()).filter(Boolean);
       const parsed = clauses.map((c) => {
         const m = c.match(clauseRe);
@@ -245,17 +245,33 @@ export function parseEquipPage(html, id) {
   const rarityLabel = decodeEntities(detail.split(/<br\s*\/?\s*>/)[0] || '').trim();
   const icon = (html.match(/class="eqx-art" src="([^"]+)"/) || [])[1] || '';
 
+  // スロット抽出。「eqd-slot」には RANK CALCULATOR / EQUIPPABLE CHARACTERS の枠も
+  // 含まれるためラベルで除外する。効果なしスロット（eqd-empty）と
+  // 選択式効果（eqd-option。— OR — 区切り）にも対応する。
   const slots = [];
-  const slotRe = /<div class="eqd-slot([^"]*)">\s*<div class="eqd-slot-label">([^<]+)<\/div>\s*<div class="eqd-eff">(.*?)<\/div>/gs;
-  let m;
-  while ((m = slotRe.exec(html)) !== null) {
-    const rawLines = m[3].split(/<br\s*\/?\s*>/).map((l) => decodeEntities(l.replace(/<[^>]+>/g, '')).trim()).filter(Boolean);
-    const star7 = rawLines.some((l) => l.includes('【★7で解放】')) || m[1].includes('s4');
-    const lines = rawLines
-      .filter((l) => !l.includes('【★7で解放】'))
-      .map(classifyLine)
-      .filter(Boolean);
-    slots.push({ label: decodeEntities(m[2]).trim(), star7, lines });
+  for (const seg of html.split(/<div class="eqd-slot(?=[ "])/).slice(1)) {
+    const cls = (seg.match(/^([^"]*)"/) || [])[1] || '';
+    const label = decodeEntities((seg.match(/<div class="eqd-slot-label">([^<]+)<\/div>/) || [])[1] || '').trim();
+    if (!label || !/^SLOT/i.test(label)) continue;
+    const isOption = seg.includes('eqd-option');
+    const effLines = [];
+    for (const em of seg.matchAll(/<div class="eqd-eff">([\s\S]*?)<\/div>/g)) {
+      const ls = em[1].split(/<br\s*\/?\s*>/)
+        .map((l) => decodeEntities(l.replace(/<[^>]+>/g, '')).trim()).filter(Boolean);
+      effLines.push(ls);
+    }
+    const star7 = cls.includes('s4') || effLines.flat().some((l) => l.includes('【★7で解放】'));
+    let lines;
+    if (isOption) {
+      // 選択式効果はどれが付くか不定のため計算対象にせず、原文のまま表示用に保存する
+      lines = effLines.flatMap((ls, i) => ls.map((l) => ({ raw: `【選択${i + 1}】${l}` })));
+    } else {
+      lines = effLines.flat()
+        .filter((l) => !l.includes('【★7で解放】'))
+        .map(classifyLine)
+        .filter(Boolean);
+    }
+    slots.push({ label, star7, lines });
   }
   if (slots.length === 0) throw new Error('eqd-slot が見つかりません');
 
@@ -461,8 +477,20 @@ async function main() {
     let done = 0;
     for (const w of work) {
       try {
-        const { status, html } = await politeFetch(w.path);
-        if (status === 404) { failures.push({ ...w, error: '404' }); continue; }
+        // 以前の失敗ページの生HTMLが残っていれば、まず再取得なしで再パースを試みる
+        const failedPath = join(CRAWL, 'failed', `${w.kind}-${w.id}.html`);
+        let html = null;
+        if (existsSync(failedPath)) {
+          try {
+            const cached = await readFile(failedPath, 'utf8');
+            const parsed = w.parse(cached, w.id);
+            await writeFile(join(CRAWL, w.kind, `${w.id}.json`), JSON.stringify(parsed));
+            continue;
+          } catch { /* 再パースも失敗 → 取得し直す */ }
+        }
+        const res = await politeFetch(w.path);
+        if (res.status === 404) { failures.push({ ...w, error: '404' }); continue; }
+        html = res.html;
         const parsed = w.parse(html, w.id);
         await writeFile(join(CRAWL, w.kind, `${w.id}.json`), JSON.stringify(parsed));
       } catch (e) {

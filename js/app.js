@@ -750,8 +750,9 @@ function openCharSheet(cid) {
 
 const RARITY_LABELS = {
   iron: 'アイアン', bronze: 'ブロンズ', silver: 'シルバー', gold: 'ゴールド',
-  awakenedgold: '覚醒ゴールド', platinum: 'プラチナ', unique: 'ユニーク',
-  event: 'イベント', rainbow: 'レインボー',
+  platinum: 'プラチナ', unique: 'ユニーク', event: 'イベント',
+  awakenedbronze: '覚醒ブロンズ', awakenedsilver: '覚醒シルバー',
+  awakenedgold: '覚醒ゴールド', awakenedunique: '覚醒ユニーク', rainbow: 'レインボー',
 };
 
 function renderFrags() {

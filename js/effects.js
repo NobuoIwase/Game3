@@ -80,7 +80,8 @@ export function lookupEffectName(text, effectMap) {
       [a, b],
       [`${a}力`, b],
       sfx ? [a + sfx, b] : null,
-      head && !/^(打撃|射撃)/.test(b) ? [`${a}力`, head + b] : null,
+      head && !/^(打撃|射撃)/.test(b) ? [a, head + b] : null,          // 射撃攻撃力・防御力
+      head && !/^(打撃|射撃)/.test(b) ? [`${a}力`, head + b] : null,   // 打撃攻撃・防御力
       sfx && head && !/^(打撃|射撃)/.test(b) ? [a + sfx, head + b] : null,
     ].filter(Boolean);
     for (const parts of candidates) {
