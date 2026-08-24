@@ -1,5 +1,8 @@
-# GitHub Pages への静的配信（DESIGN.md §7）。ビルド不要なのでリポジトリをそのまま公開する。
-# 有効化するには: リポジトリの Settings → Pages → Source を「GitHub Actions」にする。
+# GitHub Pages への配信（DESIGN.md §7）
+# Pages のソースは gh-pages ブランチ（branch 配信）。main に push すると
+# テスト実行後に main の内容をそのまま gh-pages へミラーして公開する。
+# （Actions 標準トークンでは Pages サイトの新規作成ができないため、
+#   artifact 方式ではなく branch 方式を採用している）
 name: Deploy to GitHub Pages
 
 on:
@@ -8,9 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
@@ -29,16 +30,7 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: main の内容を gh-pages へミラー
+        run: git push origin HEAD:gh-pages --force

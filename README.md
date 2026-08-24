@@ -36,10 +36,9 @@ DESIGN.md §2-4 の検算ケース（❸ が小数第2位まで一致）を含�
 
 公開URL: **https://nobuoiwase.github.io/Game3/**
 
-`main` ブランチに push すると GitHub Actions が自動でテスト実行 → GitHub Pages へデプロイします。
-（無料プランの GitHub Pages はリポジトリが Public のときだけ使えます。
-Private のままだとデプロイが失敗するので、Settings → General → Danger Zone →
-「Change visibility」→ Public に変更してください）
+`main` ブランチに push すると GitHub Actions がテストを実行し、成功したら
+main の内容を `gh-pages` ブランチへミラーして公開します（Pages のソースは gh-pages ブランチ）。
+※無料プランの GitHub Pages はリポジトリが Public のときだけ使えます。
 
 - **Android**: Chrome で上のURLを開く → メニュー（⋮）→「アプリをインストール」
   （表示によっては「ホーム画面に追加」）。以後はアイコンからアプリとして起動できます
