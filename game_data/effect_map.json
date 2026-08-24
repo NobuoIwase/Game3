@@ -8,6 +8,9 @@
     "それでも解決できなければ『未対応』として必ず画面に表示する（§1-4）。",
     "other:true は『ステータス計算に関係しないと確認済みの効果』。警告は出さないが計算にも入れない。"
   ],
+  "_other_patterns": [
+    "^特[攻防][:：]"
+  ],
   "_stat_keywords": {
     "打撃攻撃力": "strike_atk",
     "射撃攻撃力": "blast_atk",
@@ -27,6 +30,7 @@
     "基礎射撃防御力":       { "stat": "blast_def", "base": true },
     "基礎クリティカル":     { "stat": "critical", "base": true },
     "基礎気力回復":         { "stat": "ki_recovery", "base": true },
+    "基礎気力回復速度":     { "stat": "ki_recovery", "base": true },
     "基礎体力最大値":       { "stat": "hp", "base": true },
     "基礎打撃・射撃攻撃力": { "stats": ["strike_atk", "blast_atk"], "base": true },
     "基礎打撃・射撃防御力": { "stats": ["strike_def", "blast_def"], "base": true },
@@ -76,6 +80,11 @@
     "射撃アーツ与ダメージ": { "other": true },
     "さらに、味方の自爆による与ダメージ": { "other": true },
     "クリティカル発生率": { "other": true },
-    "クリティカルダメージ": { "other": true }
+    "クリティカルダメージ": { "other": true },
+    "気力回復速度":       { "other": true },
+    "必殺技ダメージ":     { "other": true },
+    "究極技ダメージ":     { "other": true },
+    "バニシングゲージ回復速度": { "other": true },
+    "自爆ダメージ":       { "other": true }
   }
 }

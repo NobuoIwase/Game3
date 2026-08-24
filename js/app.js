@@ -748,7 +748,11 @@ function openCharSheet(cid) {
 
 // ---------------------------------------------------------------- フラグタブ / フラグ詳細シート
 
-const RARITY_LABELS = { silver: 'シルバー', gold: 'ゴールド', awakenedgold: '覚醒ゴールド', platinum: 'プラチナ', unique: 'ユニーク' };
+const RARITY_LABELS = {
+  iron: 'アイアン', bronze: 'ブロンズ', silver: 'シルバー', gold: 'ゴールド',
+  awakenedgold: '覚醒ゴールド', platinum: 'プラチナ', unique: 'ユニーク',
+  event: 'イベント', rainbow: 'レインボー',
+};
 
 function renderFrags() {
   const root = $('#frags-view');

@@ -15,8 +15,10 @@
   --el-RED: #e8544f; --el-YEL: #eec93f; --el-PUR: #a45de2;
   --el-GRN: #58c96b; --el-BLU: #4aa3e8; --el-LGT: #f0f0e8; --el-DRK: #6b5f8a;
   /* フラグメントレアリティ */
-  --fr-silver: #aab4bd; --fr-gold: #d9a93c; --fr-awakenedgold: #e8863c;
-  --fr-platinum: #b8d8e8; --fr-unique: #b06de0; --fr-default: #5a5d75;
+  --fr-iron: #7d838a; --fr-bronze: #b0793f; --fr-silver: #aab4bd;
+  --fr-gold: #d9a93c; --fr-awakenedgold: #e8863c; --fr-platinum: #b8d8e8;
+  --fr-unique: #b06de0; --fr-event: #5fb96a; --fr-rainbow: #d76fd0;
+  --fr-default: #5a5d75;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; padding: 0; }
@@ -199,7 +201,9 @@ td.num { font-variant-numeric: tabular-nums; }
 .frag-slot img { width: 100%; height: 100%; object-fit: cover; }
 .frag-slot.fr-gold { border-color: var(--fr-gold); } .frag-slot.fr-awakenedgold { border-color: var(--fr-awakenedgold); }
 .frag-slot.fr-platinum { border-color: var(--fr-platinum); } .frag-slot.fr-unique { border-color: var(--fr-unique); }
-.frag-slot.fr-silver { border-color: var(--fr-silver); }
+.frag-slot.fr-silver { border-color: var(--fr-silver); } .frag-slot.fr-iron { border-color: var(--fr-iron); }
+.frag-slot.fr-bronze { border-color: var(--fr-bronze); } .frag-slot.fr-event { border-color: var(--fr-event); }
+.frag-slot.fr-rainbow { border-color: var(--fr-rainbow); }
 
 /* ============ フラグメントグリッド ============ */
 .frag-grid {
@@ -214,7 +218,9 @@ td.num { font-variant-numeric: tabular-nums; }
 .frag-tile img { width: 100%; height: 100%; object-fit: cover; display: block; background: #1c1d28; }
 .frag-tile.fr-gold { border-color: var(--fr-gold); } .frag-tile.fr-awakenedgold { border-color: var(--fr-awakenedgold); }
 .frag-tile.fr-platinum { border-color: var(--fr-platinum); } .frag-tile.fr-unique { border-color: var(--fr-unique); }
-.frag-tile.fr-silver { border-color: var(--fr-silver); }
+.frag-tile.fr-silver { border-color: var(--fr-silver); } .frag-tile.fr-iron { border-color: var(--fr-iron); }
+.frag-tile.fr-bronze { border-color: var(--fr-bronze); } .frag-tile.fr-event { border-color: var(--fr-event); }
+.frag-tile.fr-rainbow { border-color: var(--fr-rainbow); }
 .frag-tile .count-badge {
   position: absolute; bottom: 1px; right: 1px; font-size: 10px; font-weight: 800;
   background: rgba(10,10,16,.85); color: var(--accent); border-radius: 5px; padding: 0 4px;

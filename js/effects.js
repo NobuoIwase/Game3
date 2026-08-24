@@ -49,6 +49,12 @@ export function lookupEffectName(text, effectMap) {
     return null; // entries の記述が壊れている → 未対応扱い
   }
 
+  // 1.5 計算対象外のパターン（「特攻：○○」等。パターンもデータ側に置く — §1-3）
+  for (const pat of effectMap._other_patterns || []) {
+    try { if (new RegExp(pat).test(t)) return { other: true }; }
+    catch { /* 不正なパターンは無視 */ }
+  }
+
   // 2. 規則パース（§2-1: 「基礎」で始まるかが加算/乗算の唯一の判別基準）
   const base = t.startsWith('基礎');
   let body = base ? t.slice('基礎'.length) : t;

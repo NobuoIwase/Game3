@@ -42,11 +42,19 @@ test('計算対象外と確認済みの効果（other）は警告なしで除外
 });
 
 test('未知の効果文言は未対応として返る（黙って0にしない — §1-4）', () => {
-  const r = resolveEffect({ text: '気力回復速度', value: 10 }, effectMap);
+  const r = resolveEffect({ text: '会心威力', value: 10 }, effectMap);
   assert.equal(r.ok, false);
   assert.match(r.reason, /未対応の効果文言/);
-  const r2 = resolveEffect({ text: '基礎必殺技与ダメージ', value: 10 }, effectMap);
-  assert.equal(r2.ok, false);
+});
+
+test('気力回復速度: 基礎付きはステータス、基礎なしは戦闘バフ（計算対象外）', () => {
+  assert.deepEqual(lookupEffectName('基礎気力回復速度', effectMap), { stats: ['ki_recovery'], base: true });
+  assert.deepEqual(lookupEffectName('気力回復速度', effectMap), { other: true });
+});
+
+test('「特攻：○○」「特防：○○」はパターンで計算対象外になる（§1-3: パターンもデータ側）', () => {
+  assert.deepEqual(lookupEffectName('特攻：ピッコロ', effectMap), { other: true });
+  assert.deepEqual(lookupEffectName('特防：人造人間', effectMap), { other: true });
 });
 
 test('fragmentStatEffects v2: SLOT構造・star7条件・raw行の扱い', () => {
