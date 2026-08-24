@@ -1,6 +1,7 @@
 // PWA アイコン生成スクリプト（依存ライブラリなし・Node標準のみ）
 // 実行: node tools/gen_icons.mjs
-// icons/icon-180.png (apple-touch-icon), icon-192.png, icon-512.png を生成する。
+// icons/icon-180.png (apple-touch-icon), icon-192.png, icon-512.png と、
+// Android の円形マスク用に結晶を小さめに描いた icon-maskable-{192,512}.png を生成する。
 
 import { deflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -57,7 +58,7 @@ function encodePNG(width, height, rgba) {
 
 // ---- 描画: 紺地にオレンジの結晶（フラグメント）----
 
-function drawIcon(size) {
+function drawIcon(size, scale = 1) {
   const img = Buffer.alloc(size * size * 4);
   const set = (x, y, r, g, b) => {
     const i = (y * size + x) * 4;
@@ -69,8 +70,8 @@ function drawIcon(size) {
       // 背景: 上下グラデーションの紺
       const t = y / size;
       let r = Math.round(0x23 - 8 * t), g = Math.round(0x25 - 8 * t), b = Math.round(0x3c - 12 * t);
-      const u = (x - c) / (size * 0.36);
-      const v = (y - c) / (size * 0.44);
+      const u = (x - c) / (size * 0.36 * scale);
+      const v = (y - c) / (size * 0.44 * scale);
       const d = Math.abs(u) + Math.abs(v); // ひし形（結晶）
       if (d <= 1) {
         const shade = 1 - 0.35 * (v + 1) / 2; // 上が明るい
@@ -97,4 +98,10 @@ for (const size of [180, 192, 512]) {
   const png = drawIcon(size);
   writeFileSync(join(ROOT, 'icons', `icon-${size}.png`), png);
   console.log(`icons/icon-${size}.png (${png.length} bytes)`);
+}
+// マスカブル版: 円形マスクのセーフゾーン（中心から半径40%）に結晶が収まるよう縮小する
+for (const size of [192, 512]) {
+  const png = drawIcon(size, 0.8);
+  writeFileSync(join(ROOT, 'icons', `icon-maskable-${size}.png`), png);
+  console.log(`icons/icon-maskable-${size}.png (${png.length} bytes)`);
 }

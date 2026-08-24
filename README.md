@@ -32,12 +32,20 @@ npm test
 DESIGN.md §2-4 の検算ケース（❸ が小数第2位まで一致）を含む全テストが実行されます。
 **実装を変更したら必ずここが通ることを確認してください。**
 
-### iPhone のホーム画面に置く（PWA）
+### スマホにインストールする（PWA）
 
-1. GitHub Pages などの HTTPS 配信でこのリポジトリを公開する
-   （リポジトリの Settings → Pages → Branch を選んで保存。ビルドは不要）
-2. iPhone の Safari で開き、共有メニュー →「ホーム画面に追加」
-3. 以後はアイコンからネイティブアプリのように起動し、オフラインでも動作します
+公開URL: **https://nobuoiwase.github.io/Game3/**
+
+`main` ブランチに push すると GitHub Actions が自動でテスト実行 → GitHub Pages へデプロイします。
+（無料プランの GitHub Pages はリポジトリが Public のときだけ使えます。
+Private のままだとデプロイが失敗するので、Settings → General → Danger Zone →
+「Change visibility」→ Public に変更してください）
+
+- **Android**: Chrome で上のURLを開く → メニュー（⋮）→「アプリをインストール」
+  （表示によっては「ホーム画面に追加」）。以後はアイコンからアプリとして起動できます
+- **iPhone**: Safari で開く → 共有メニュー →「ホーム画面に追加」
+
+一度開けば Service Worker がキャッシュするため、オフラインでも動作します。
 
 ## 画面の構成
 
