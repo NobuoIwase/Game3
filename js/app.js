@@ -3,7 +3,7 @@
 // エラーメッセージはすべて日本語で、原因と対処が分かる文言にする（§6）。
 
 import { STATS, STAT_LABELS, computeStat, marginalValues } from './calc.js';
-import { sumFragmentEffects, fragmentStatEffects } from './effects.js';
+import { sumFragmentEffects, fragmentStatEffects, lookupEffectName } from './effects.js';
 import {
   optimizeParty, abilityCorrections, canEquip, characterDetail,
   statBase, autoAbilityLevel, memberAbilityGroups,
@@ -24,7 +24,7 @@ const ui = {
     preset: 'attack', weights: Object.fromEntries(STATS.map((s) => [s, 0])),
     allowDup: false,
   },
-  charFilter: { q: '', el: '', ownedOnly: false },
+  charFilter: null, // defaultCharFilter() で初期化（boot 時）
   fragFilter: { q: '', rarity: '', ownedOnly: false },
   calc: {
     stat: 'strike_atk', total: 273617, boost: 42080,
@@ -34,6 +34,130 @@ const ui = {
 };
 
 const ELEMENTS = ['RED', 'YEL', 'PUR', 'GRN', 'BLU', 'LGT', 'DRK'];
+
+// ---------------------------------------------------------------- キャラのソート/フィルタ（ゲームのソート・フィルタ画面準拠）
+
+const CHAR_SORTS = [
+  ['id', '入手順'], ['card_no', 'カード番号'], ['rarity', 'レアリティ'], ['element', '属性'],
+  ['stars', '限界突破'], ['hp', '体力'], ['strike_atk', '打撃攻撃'], ['blast_atk', '射撃攻撃'],
+  ['strike_def', '打撃防御'], ['blast_def', '射撃防御'], ['critical', 'クリティカル'], ['ki_recovery', '気力回復'],
+];
+const RARITY_ORDER = { ULTRA: 6, LEGEND: 5, SPARKING: 4, EXTREME: 3, HERO: 2 };
+const CHAR_RARITIES = ['HERO', 'EXTREME', 'SPARKING', 'LEGEND', 'ULTRA'];
+const STYLE_TAGS = [13000, 13001, 13002, 13003]; // 援護/防御/打撃/射撃タイプ
+
+function defaultCharFilter() {
+  return {
+    q: '', sort: 'id', desc: true,
+    els: [], rarities: [], ll: false, styles: [],
+    owned: '', zenkai: false, tagName: '', zStat: '',
+  };
+}
+
+/** キャラのZ/ZENKAIアビリティ（最大レベル）が指定ステータスを盛るか */
+function charBoostsStat(def, stat) {
+  for (const list of [def.z_ability, def.zenkai_ability]) {
+    const top = list?.[list.length - 1];
+    for (const g of top?.groups || []) {
+      for (const e of g.effects || []) {
+        const hit = lookupEffectName(e.text, state.game.effectMap);
+        if (hit && hit.stats && hit.stats.includes(stat)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function applyCharSortFilter(defs, f) {
+  const q = f.q.trim();
+  const tagId = f.tagName
+    ? Number(Object.entries(state.game.tags).find(([, n]) => n === f.tagName)?.[0])
+    : null;
+  let list = defs.filter((d) =>
+    (!q || (d.name || '').includes(q) || (d.card_no || '').includes(q)) &&
+    (f.els.length === 0 || f.els.includes(d.element)) &&
+    (f.rarities.length === 0 || f.rarities.includes(d.rarity)) &&
+    (!f.ll || d.lf) &&
+    (f.styles.length === 0 || f.styles.some((t) => (d.tags || []).includes(t))) &&
+    (f.owned === '' || (f.owned === 'owned') === isOwned(d.id)) &&
+    (!f.zenkai || d.zenkai) &&
+    (tagId == null || Number.isNaN(tagId) || (d.tags || []).includes(tagId)) &&
+    (!f.zStat || charBoostsStat(d, f.zStat)));
+
+  const val = (d) => {
+    switch (f.sort) {
+      case 'id': return d.id;
+      case 'rarity': return RARITY_ORDER[d.rarity] || 0;
+      case 'element': return ELEMENTS.indexOf(d.element);
+      case 'stars': return isOwned(d.id) ? (Number(charMy(d.id).stars) || 0) : -1;
+      case 'critical': return Number(d.soul_max?.critical) || 0;
+      default: return Number(d.stats?.[f.sort]) || 0;
+    }
+  };
+  const dir = f.desc ? -1 : 1;
+  list.sort((a, b) => {
+    let c;
+    if (f.sort === 'card_no') c = String(a.card_no || '').localeCompare(String(b.card_no || ''));
+    else c = val(a) - val(b);
+    return c !== 0 ? dir * c : b.id - a.id; // 同値は入手順（新しい順）
+  });
+  return list;
+}
+
+/** ソート/フィルタ操作UI（キャラタブと編成のキャラ選択で共用） */
+function charFilterControls(f, onChange) {
+  const chip = (label, isOn, toggle) => el('button', {
+    class: `chip${isOn() ? ' on' : ''}`,
+    onclick: () => { toggle(); onChange(); },
+  }, label);
+  const toggleIn = (arr, v) => {
+    const i = arr.indexOf(v);
+    if (i >= 0) arr.splice(i, 1); else arr.push(v);
+  };
+  return el('div', {},
+    el('div', { class: 'filter-row' },
+      el('input', {
+        type: 'search', value: f.q, placeholder: '名前・カード番号で検索',
+        oninput: (e) => { f.q = e.target.value; onChange(); },
+      }),
+      el('select', {
+        style: 'flex:none;width:110px',
+        onchange: (e) => { f.sort = e.target.value; onChange(); },
+      }, CHAR_SORTS.map(([k, label]) => el('option', { value: k, selected: f.sort === k }, label))),
+      el('button', {
+        class: 'chip on', style: 'flex:none',
+        onclick: (e) => { f.desc = !f.desc; e.target.textContent = f.desc ? '降順▼' : '昇順▲'; onChange(); },
+      }, f.desc ? '降順▼' : '昇順▲')),
+    el('details', {},
+      el('summary', {}, 'フィルタ'),
+      el('div', { class: 'chip-row' },
+        CHAR_RARITIES.map((r) => chip(r, () => f.rarities.includes(r), () => toggleIn(f.rarities, r))),
+        chip('LL', () => f.ll, () => { f.ll = !f.ll; })),
+      el('div', { class: 'chip-row' },
+        ELEMENTS.map((e2) => chip(e2, () => f.els.includes(e2), () => toggleIn(f.els, e2)))),
+      el('div', { class: 'chip-row' },
+        STYLE_TAGS.map((t) => chip(tagName(t), () => f.styles.includes(t), () => toggleIn(f.styles, t))),
+        chip('ZENKAI', () => f.zenkai, () => { f.zenkai = !f.zenkai; })),
+      el('div', { class: 'chip-row' },
+        chip('獲得済み', () => f.owned === 'owned', () => { f.owned = f.owned === 'owned' ? '' : 'owned'; }),
+        chip('未獲得', () => f.owned === 'unowned', () => { f.owned = f.owned === 'unowned' ? '' : 'unowned'; })),
+      el('div', { class: 'row' },
+        el('label', {}, 'タグ・エピソード指定',
+          el('input', {
+            type: 'text', list: 'tag-datalist', value: f.tagName, placeholder: '指定なし',
+            onchange: (e) => { f.tagName = e.target.value.trim(); onChange(); },
+          })),
+        el('label', {}, 'Z/ZENKAIアビ効果',
+          el('select', { onchange: (e) => { f.zStat = e.target.value; onChange(); } },
+            el('option', { value: '', selected: f.zStat === '' }, '指定なし'),
+            STATS.map((s) => el('option', { value: s, selected: f.zStat === s }, STAT_LABELS[s]))))),
+      el('button', {
+        class: 'btn secondary small',
+        onclick: () => { Object.assign(f, defaultCharFilter()); onChange(true); },
+      }, 'リセット')),
+    el('datalist', { id: 'tag-datalist' },
+      Object.values(state.game.tags).sort().map((n) => el('option', { value: n }))));
+}
 const PRESETS = {
   attack: { label: '攻撃特化', weights: { strike_atk: 1, blast_atk: 1 } },
   defense: { label: '耐久特化', weights: { hp: 1, strike_def: 0.7, blast_def: 0.7 } },
@@ -307,7 +431,10 @@ function renderParty() {
       el('div', { class: 'm-body' },
         el('div', { class: 'm-name' }, m.character.name,
           bIds.map(String).includes(cid) ? el('span', { class: 'badge ok' }, '出撃') : el('span', { class: 'badge ng' }, 'ベンチ')),
-        el('div', { class: 'm-sub' }, `${m.character.card_no} ★${m.my.stars} / Zアビ${['I','II','III','IV'][((m.my.z_level && m.my.z_level !== 'auto') ? m.my.z_level : autoAbilityLevel(m.my.stars)) - 1] || '—'}`),
+        el('div', { class: 'm-sub', style: 'display:flex;align-items:center;gap:6px' },
+          m.character.card_no,
+          el('span', {}, starsSelectCompact(cid, m.my)),
+          `Zアビ${['I', 'II', 'III', 'IV'][((m.my.z_level && m.my.z_level !== 'auto') ? m.my.z_level : autoAbilityLevel(m.my.stars)) - 1] || '—'}`),
         el('div', { class: 'frag-slots' },
           equips.map((fid, idx) => {
             const f = fid ? fragDef(fid) : null;
@@ -441,18 +568,14 @@ async function runOptimize() {
 // ---------------------------------------------------------------- キャラ選択シート
 
 function openCharPicker(slotIndex) {
-  const filter = { q: '', el: '', ownedOnly: true };
+  const filter = defaultCharFilter(); // 既定は全キャラ表示（ソートは入手順・降順）
   const body = el('div', {});
   const grid = el('div', { class: 'char-grid' });
+  const controlsBox = el('div', {});
 
   const rerenderGrid = () => {
-    const q = filter.q.trim();
     const inParty = new Set(ui.party.memberIds.filter(Boolean).map(String));
-    const defs = Object.values(state.game.characters)
-      .filter((d) => !filter.ownedOnly || isOwned(d.id))
-      .filter((d) => !filter.el || d.element === filter.el)
-      .filter((d) => !q || (d.name || '').includes(q) || (d.card_no || '').includes(q))
-      .sort((a, b) => b.id - a.id);
+    const defs = applyCharSortFilter(Object.values(state.game.characters), filter);
     grid.replaceChildren(...defs.slice(0, 300).map((d) => {
       const tile = charTile(d, {
         onclick: async () => {
@@ -473,25 +596,16 @@ function openCharPicker(slotIndex) {
       if (inParty.has(String(d.id))) tile.append(el('div', { class: 'equipped-badge', style: 'position:absolute;top:0;left:0;right:0;font-size:8px;font-weight:900;text-align:center;background:linear-gradient(180deg,#ffa640,#e0641e);color:#fff' }, 'パーティ'));
       return tile;
     }));
-    if (defs.length > 300) grid.append(el('p', { class: 'hint' }, `${defs.length} 体中 300 体を表示中。検索で絞り込んでください。`));
-    if (defs.length === 0) grid.append(el('p', { class: 'hint' }, filter.ownedOnly ? '所持キャラがいません。「所持のみ」を外すと全キャラから選べます（選ぶと自動で登録されます）。' : '該当なし'));
+    if (defs.length > 300) grid.append(el('p', { class: 'hint' }, `${defs.length} 体中 300 体を表示中。検索・フィルタで絞り込んでください。`));
+    if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当なし。フィルタをリセットしてください。'));
+  };
+  const renderControls = () => {
+    controlsBox.replaceChildren(charFilterControls(filter, (reset) => { if (reset) renderControls(); rerenderGrid(); }));
   };
 
   body.append(...nodes(
-    el('div', { class: 'filter-row' },
-      el('input', { type: 'search', placeholder: '名前・カード番号で検索', oninput: (e) => { filter.q = e.target.value; rerenderGrid(); } }),
-      el('label', { class: 'check', style: 'margin:0;flex:none' },
-        el('input', { type: 'checkbox', checked: filter.ownedOnly, onchange: (e) => { filter.ownedOnly = e.target.checked; rerenderGrid(); } }), '所持のみ')),
-    el('div', { class: 'chip-row' },
-      ELEMENTS.map((e2) => el('button', {
-        class: `chip${filter.el === e2 ? ' on' : ''}`,
-        onclick: (ev) => {
-          filter.el = filter.el === e2 ? '' : e2;
-          body.querySelectorAll('.chip-row .chip').forEach((c) => c.classList.remove('on'));
-          if (filter.el) ev.target.classList.add('on');
-          rerenderGrid();
-        },
-      }, e2))),
+    controlsBox,
+    el('p', { class: 'small-note' }, '未所持キャラを選ぶと自動で所持登録されます（ブースト値はソウルブースト最大で初期化）。'),
     ui.party.memberIds[slotIndex]
       ? el('button', {
           class: 'btn danger small',
@@ -503,6 +617,7 @@ function openCharPicker(slotIndex) {
         }, 'この枠を空にする')
       : null,
     grid));
+  renderControls();
   rerenderGrid();
   openSheet(`${slotIndex < 3 ? `バトル ${slotIndex + 1}` : `ベンチ ${slotIndex - 2}`} のキャラを選択`, body);
 }
@@ -597,29 +712,39 @@ function renderChars() {
   const f = ui.charFilter;
   const grid = el('div', { class: 'char-grid' });
   const rerenderGrid = () => {
-    const q = f.q.trim();
-    const defs = Object.values(state.game.characters)
-      .filter((d) => !f.ownedOnly || isOwned(d.id))
-      .filter((d) => !f.el || d.element === f.el)
-      .filter((d) => !q || (d.name || '').includes(q) || (d.card_no || '').includes(q))
-      .sort((a, b) => b.id - a.id);
+    const defs = applyCharSortFilter(Object.values(state.game.characters), f);
     grid.replaceChildren(...defs.slice(0, 400).map((d) =>
       charTile(d, { onclick: () => openCharSheet(String(d.id)) })));
-    if (defs.length > 400) grid.append(el('p', { class: 'hint' }, `${defs.length} 体中 400 体を表示中。検索で絞り込んでください。`));
+    if (defs.length > 400) grid.append(el('p', { class: 'hint' }, `${defs.length} 体中 400 体を表示中。検索・フィルタで絞り込んでください。`));
+    if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当するキャラがいません。フィルタをリセットしてください。'));
   };
   root.replaceChildren(
     el('p', { class: 'hint' }, `全 ${Object.keys(state.game.characters).length} 体 / 所持登録 ${Object.keys(state.my.characters).length} 体。タップで詳細・所持登録。`),
-    el('div', { class: 'filter-row' },
-      el('input', { type: 'search', value: f.q, placeholder: '名前・カード番号で検索', oninput: (e) => { f.q = e.target.value; rerenderGrid(); } }),
-      el('label', { class: 'check', style: 'margin:0;flex:none' },
-        el('input', { type: 'checkbox', checked: f.ownedOnly, onchange: (e) => { f.ownedOnly = e.target.checked; rerenderGrid(); } }), '所持のみ')),
-    el('div', { class: 'chip-row' },
-      ELEMENTS.map((e2) => el('button', {
-        class: `chip${f.el === e2 ? ' on' : ''}`,
-        onclick: () => { f.el = f.el === e2 ? '' : e2; renderChars(); },
-      }, e2))),
+    charFilterControls(f, (reset) => { if (reset) renderChars(); else rerenderGrid(); }),
     grid);
   rerenderGrid();
+}
+
+/** 限界突破（星）の選択（★0〜★14。★7以上でSLOT4解放・ZアビIV等に影響） */
+function starsSelect(my, onchange) {
+  return el('select', {
+    onchange: (e) => { my.stars = Number(e.target.value); onchange?.(); },
+  }, Array.from({ length: 15 }, (_, i) =>
+    el('option', { value: i, selected: Number(my.stars) === i }, `★${i}${i >= 7 ? '（SLOT4有効）' : ''}`)));
+}
+
+/** メンバーカード用のコンパクトな星セレクタ（変更すると即保存・再計算） */
+function starsSelectCompact(cid, my) {
+  return el('select', {
+    style: 'width:auto;display:inline-block;padding:1px 4px;margin:0;font-size:11px',
+    onchange: async (e) => {
+      my.stars = Number(e.target.value);
+      if (!isOwned(cid)) state.my.characters[String(cid)] = my;
+      await persistMy();
+      renderParty();
+    },
+  }, Array.from({ length: 15 }, (_, i) =>
+    el('option', { value: i, selected: Number(my.stars) === i }, `★${i}`)));
 }
 
 const LEVEL_LABELS = ['I', 'II', 'III', 'IV'];
@@ -684,7 +809,8 @@ function openCharSheet(cid) {
     const m2 = charMy(cid);
     ownedArea.replaceChildren(...nodes(
       el('div', { class: 'row' },
-        labeledNum('限界突破（星）', m2, 'stars'),
+        el('label', {}, '限界突破（星）',
+          starsSelect(m2, () => openCharSheet(cid))),
         labeledNum('装備枠', m2, 'equip_slots')),
       abilityLevelSelect('Zアビリティ', m2, 'z_level', def.z_ability?.length, m2.stars),
       abilityLevelSelect('出撃Zアビリティ', m2, 'deploy_z_level', def.deploy_z_ability?.length, m2.stars),
@@ -1099,6 +1225,7 @@ async function reloadAll() {
   state.game = await store.loadGameData();
   state.my = await store.loadMyData();
   state.overrides = await store.loadOverrides();
+  if (!ui.charFilter) ui.charFilter = defaultCharFilter();
   restorePartyFromMyData();
   renderAll();
 }
