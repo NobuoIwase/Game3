@@ -151,12 +151,16 @@ export function abilityCorrections(members, battleIds, effectMap) {
 // ---------------------------------------------------------------- ステータス基礎値
 
 /**
- * キャラの ❶（基本ステータス）とブースト値を決める。
- * v2: character.stats = Lv5000 の基本値（❶）。合計ステ = ❶ + ブースト。
- * v1: character.base_stats = 合計ステ。❶ = 合計ステ − ブースト。
+ * キャラの ❶（基本ステータス）とブースト値を決める。優先順:
+ * 1. my.total_override = 実機のステータス画面で見た合計ステ（§1-1 の手入力経路）。
+ *    ❶ = 合計ステ − ブースト。限界突破が最大でないキャラはこれで実測に合わせる
+ * 2. character.stats = 取り込みデータの Lv5000 完全限界突破時の基本値（❶ 相当・理論値）
+ * 3. character.base_stats = 旧形式（合計ステ）
  */
 export function statBase(character, my, stat) {
   const boost = Number(my?.boost?.[stat]) || 0;
+  const override = Number(my?.total_override?.[stat]) || 0;
+  if (override > 0) return { base: override - boost, boost, total: override };
   const v2 = Number(character.stats?.[stat]) || 0;
   if (v2 > 0) return { base: v2, boost, total: v2 + boost };
   const legacyTotal = Number(character.base_stats?.[stat]) || 0;

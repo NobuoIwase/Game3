@@ -65,6 +65,13 @@ test('statBase: v2 は stats を ❶ として、v1 は 合計ステ−ブース
   assert.equal(statBase(charaV2(1, [], { strike_atk: 0 }), my, 'strike_atk'), null, '未入力はnull');
 });
 
+test('statBase: 合計ステの実測オーバーライドが理論値より優先される（§1-1）', () => {
+  // 取り込み理論値 268,841 でも、実測の合計ステ 273,617 を入れると ❶ = 231,537 になる
+  const my = { boost: { strike_atk: 42_080 }, total_override: { strike_atk: 273_617 } };
+  const r = statBase(charaV2(1, [], { strike_atk: 268_841 }), my, 'strike_atk');
+  assert.deepEqual(r, { base: 231_537, boost: 42_080, total: 273_617 });
+});
+
 test('autoAbilityLevel: 星→アビリティレベルの既定対応（未検証の仮定・上書き可）', () => {
   assert.equal(autoAbilityLevel(0), 1);
   assert.equal(autoAbilityLevel(2), 2);

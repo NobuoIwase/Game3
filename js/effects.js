@@ -15,7 +15,23 @@
 import { STATS } from './calc.js';
 
 /**
- * 効果名（「基礎打撃攻撃力」「打撃・射撃攻撃力」「基礎体力アップ」等）を解決する。
+ * 効果名の1成分（「打撃攻撃力」「クリティカル値」「被回復量」等）を解決する。
+ * @returns {{stat:string} | {other:true} | null}
+ */
+function resolvePart(part, effectMap) {
+  const keywords = effectMap._stat_keywords || {};
+  const entries = effectMap.entries || {};
+  let p = part.trim();
+  if (p.startsWith('基礎')) p = p.slice('基礎'.length); // 成分ごとの「基礎」接頭辞（例: 基礎打撃攻撃力・基礎クリティカル値）
+  if (keywords[p] && STATS.includes(keywords[p])) return { stat: keywords[p] };
+  const e = entries[p] || entries[part.trim()];
+  if (e && e.other === true) return { other: true };
+  if (e && e.stat && STATS.includes(e.stat) && !e.stats) return { stat: e.stat };
+  return null;
+}
+
+/**
+ * 効果名（「基礎打撃攻撃力」「打撃・射撃攻撃力」「基礎射撃攻撃・打撃防御力」等）を解決する。
  * @returns {{stats:string[], base:boolean} | {other:true} | null}
  */
 export function lookupEffectName(text, effectMap) {
@@ -39,16 +55,36 @@ export function lookupEffectName(text, effectMap) {
   if (body.endsWith('アップ')) body = body.slice(0, -'アップ'.length); // 旧表記「〜アップ」
   const keywords = effectMap._stat_keywords || {};
 
-  // 完全一致のみ。「気力回復速度」を「気力回復」に誤ヒットさせない（§6 の未対応例）
+  // 単一成分。完全一致のみ（「気力回復速度」を「気力回復」に誤ヒットさせない — §6 の未対応例）
   if (keywords[body] && STATS.includes(keywords[body])) {
     return { stats: [keywords[body]], base };
   }
-  // 複合表記「打撃・射撃攻撃力」= 打撃攻撃力 + 射撃攻撃力
-  const m = body.match(/^(.+?)・(.+?)(攻撃力|防御力)$/);
-  if (m) {
-    const parts = [m[1] + m[3], m[2] + m[3]];
-    const stats = parts.map((p) => keywords[p]).filter((s) => s && STATS.includes(s));
-    if (stats.length === parts.length) return { stats, base };
+
+  // 複合表記「A・B」。表記の省略パターンを補完しながら成分ごとに解決する:
+  //   打撃・射撃攻撃力     = 打撃[攻撃力] + 射撃攻撃力   （後成分の接尾語を前に配る）
+  //   打撃攻撃・防御力     = 打撃攻撃[力] + [打撃]防御力 （前成分の種別を後に配る）
+  //   射撃攻撃・打撃防御力 = 射撃攻撃[力] + 打撃防御力
+  //   基礎打撃攻撃力・基礎クリティカル値 = そのまま2成分
+  const mm = body.match(/^(.+?)・(.+)$/);
+  if (mm) {
+    const [a, b] = [mm[1], mm[2]];
+    const sfx = (b.match(/(攻撃力|防御力)$/) || [])[1];
+    const head = (a.match(/^(打撃|射撃)/) || [])[1];
+    const candidates = [
+      [a, b],
+      [`${a}力`, b],
+      sfx ? [a + sfx, b] : null,
+      head && !/^(打撃|射撃)/.test(b) ? [`${a}力`, head + b] : null,
+      sfx && head && !/^(打撃|射撃)/.test(b) ? [a + sfx, head + b] : null,
+    ].filter(Boolean);
+    for (const parts of candidates) {
+      const resolved = parts.map((p) => resolvePart(p, effectMap));
+      if (resolved.every(Boolean)) {
+        const stats = resolved.filter((r) => r.stat).map((r) => r.stat);
+        if (stats.length === 0) return { other: true }; // 全成分が計算対象外
+        return { stats, base };
+      }
+    }
   }
   return null;
 }

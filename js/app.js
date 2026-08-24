@@ -128,6 +128,7 @@ function defaultCharMy(def) {
   return {
     stars: 7, equip_slots: 3,
     boost: { ...zeroStats(), ...(def?.soul_max || {}) },
+    total_override: {},
     z_level: 'auto', deploy_z_level: 'auto', zenkai_level: 'auto',
     z_ability: [], ll_ability: [], zenkai_ability: [],
   };
@@ -699,6 +700,15 @@ function openCharSheet(cid) {
           class: 'btn secondary small',
           onclick: () => { m2.boost = zeroStats(); openCharSheet(cid); },
         }, '0にする')),
+      el('details', { open: Object.values(m2.total_override || {}).some((v) => v > 0) },
+        el('summary', {}, '合計ステの実測値を入力（任意）'),
+        el('p', { class: 'small-note' },
+          '取り込みデータの ❶ は完全限界突破時の理論値です。実機のステータス画面と数値がズレる場合は、画面左の「合計ステ」をここに入力すると ❶ = 合計ステ − ブースト値 で実測に合わせて計算します（0 = 理論値を使用）。'),
+        el('div', { class: 'grid2' }, STATS.map((s) => {
+          if (!m2.total_override) m2.total_override = {};
+          if (m2.total_override[s] == null) m2.total_override[s] = 0;
+          return labeledNum(STAT_LABELS[s], m2.total_override, s);
+        }))),
       el('div', { class: 'row' },
         el('button', { class: 'btn', onclick: async () => { await persistMy(); closeSheet(); renderChars(); renderParty(); showMsg('ok', '保存しました'); } }, '保存'),
         el('button', {

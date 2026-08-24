@@ -86,6 +86,32 @@ export function classifyLine(line) {
 const ELEMENT_CODES = ['RED', 'YEL', 'PUR', 'GRN', 'BLU', 'LGT', 'DRK'];
 
 /**
+ * インライン条件（ZENKAIアビ等の形式）を解析する。
+ *   「タグ：未来」または「エピソード：劇場版編」かつ「属性：BLU」…
+ * 「または」= OR、「かつ」= AND。属性・レアリティ・エピソード・キャラクターも
+ * すべてタグ体系に含まれる（例: BLU=15004, HERO=12000, ベジット=50073）ため、
+ * 名前をタグIDへ解決する。
+ * @returns {Array<Array<object>>} cond（ORリスト。各要素はANDトークン列）
+ */
+function parseInlineConditions(condText, tagNameToId, unresolved) {
+  const token = (part) => {
+    const m = part.match(/「(?:タグ|エピソード|属性|レアリティ|キャラクター)[:：]([^」]+)」/);
+    if (!m) return null;
+    const name = m[1].trim();
+    const id = tagNameToId[name] ?? tagNameToId[name.normalize('NFKC')];
+    if (id != null) return { tag: Number(id), name };
+    unresolved.push(`条件:${name}`);
+    return { name };
+  };
+  const cond = [];
+  for (const orPart of condText.split('または')) {
+    const andTokens = orPart.split('かつ').map(token).filter(Boolean);
+    if (andTokens.length) cond.push(andTokens);
+  }
+  return cond;
+}
+
+/**
  * アビリティ文言（Zアビ/出撃Zアビ/ZENKAIアビ）を条件グループに分解する。
  * 形式:
  *   {{ICN:ChaTag}}タグA or {{ICN:ChaTag}}タグB\r\n○基礎打撃攻撃力22%{{ICN:UpBlue}}\r\n...
@@ -120,7 +146,7 @@ export function parseAbilityText(text, tagNameToId) {
             if (ELEMENT_CODES.includes(icn) && !name) {
               andTokens.push({ element: icn });
             } else if (name) {
-              const id = tagNameToId[name];
+              const id = tagNameToId[name] ?? tagNameToId[name.normalize('NFKC')];
               if (id != null) andTokens.push({ tag: Number(id), name });
               else { andTokens.push({ name }); g.unresolved.push(`条件:${name}`); }
             }
@@ -134,14 +160,30 @@ export function parseAbilityText(text, tagNameToId) {
         .replace(/^[○・]\s*/, '')
         .trim();
       if (!body) continue;
-      // 「基礎打撃攻撃力22%」 / 「基礎打撃攻撃力を3%アップ」 の2形式
-      let m = body.match(/^(.+?)を?\s*([\d.]+)\s*[%％]アップ$/);
-      if (!m) m = body.match(/^(.+?)\s*\+?([\d.]+)\s*[%％]$/);
-      if (m && /基礎|クリティカル|気力回復|体力/.test(m[1])) {
-        g.effects.push({ text: m[1].trim(), value: Number(m[2]) });
-      } else {
-        g.unresolved.push(body);
+
+      // 1行に複数の効果が「&」で連結されることがある（例: ZENKAIアビIII/IV）。
+      // 各節の形式: [バトル時、][「タグ：X」または「…」かつ「…」の]<効果名>[を]<値>%[アップ]
+      const clauseRe = /^(?:バトル時、)?((?:「[^」]+」(?:または|かつ)?)*)の?(.+?)を?\s*\+?([\d.]+)\s*[%％](?:アップ)?$/;
+      const clauses = body.split('&').map((s) => s.trim()).filter(Boolean);
+      const parsed = clauses.map((c) => {
+        const m = c.match(clauseRe);
+        if (!m || m[2].includes('「')) return null;
+        return { condText: m[1] || '', text: m[2].trim(), value: Number(m[3]) };
+      });
+      if (parsed.length > 0 && parsed.every(Boolean)) {
+        for (const p of parsed) {
+          if (p.condText) {
+            // 条件付きの節は独立グループにする
+            const unresolved = [];
+            const cond = parseInlineConditions(p.condText, tagNameToId, unresolved);
+            groups.push({ cond, unresolved, effects: [{ text: p.text, value: p.value }], raw: body });
+          } else {
+            g.effects.push({ text: p.text, value: p.value });
+          }
+        }
+        continue;
       }
+      g.unresolved.push(body);
     }
     if (g.effects.length > 0 || g.cond.length > 0 || g.unresolved.length > 0) groups.push(g);
   }
@@ -307,9 +349,25 @@ async function merge() {
     }
   }
 
+  // アビリティ文言はグローバルなタグ名→ID表で再パースする
+  // （ページ単体では解決できない条件 —「エピソード：劇場版編」等 — をIDへ解決するため。
+  //  キャッシュには原文 text が保存されているので再取得は不要）
+  const tagNameToId = {};
+  for (const [tid, name] of Object.entries(tags)) {
+    if (tagNameToId[name] == null) tagNameToId[name] = Number(tid);
+    const norm = name.normalize('NFKC'); // 全角/半角の表記ゆれ対策（Ｚ vs Z 等）
+    if (tagNameToId[norm] == null) tagNameToId[norm] = Number(tid);
+  }
+  const reparse = (list) => (list || []).map((a) => ({ ...a, groups: parseAbilityText(a.text, tagNameToId) }));
+
   const charactersOut = {};
   for (const meta of listMeta.chars) {
     const detail = chars[String(meta.id)];
+    if (detail) {
+      detail.z_ability = reparse(detail.z_ability);
+      detail.deploy_z_ability = reparse(detail.deploy_z_ability);
+      detail.zenkai_ability = reparse(detail.zenkai_ability);
+    }
     charactersOut[String(meta.id)] = {
       id: meta.id,
       card_no: detail?.card_no || meta.card_no,

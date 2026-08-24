@@ -14,8 +14,10 @@
     "打撃防御力": "strike_def",
     "射撃防御力": "blast_def",
     "クリティカル": "critical",
+    "クリティカル値": "critical",
     "気力回復": "ki_recovery",
-    "体力": "hp"
+    "体力": "hp",
+    "体力最大値": "hp"
   },
   "entries": {
     "基礎体力":             { "stat": "hp", "base": true },
@@ -25,8 +27,11 @@
     "基礎射撃防御力":       { "stat": "blast_def", "base": true },
     "基礎クリティカル":     { "stat": "critical", "base": true },
     "基礎気力回復":         { "stat": "ki_recovery", "base": true },
+    "基礎体力最大値":       { "stat": "hp", "base": true },
     "基礎打撃・射撃攻撃力": { "stats": ["strike_atk", "blast_atk"], "base": true },
     "基礎打撃・射撃防御力": { "stats": ["strike_def", "blast_def"], "base": true },
+    "基礎打撃攻撃・防御力": { "stats": ["strike_atk", "strike_def"], "base": true },
+    "基礎射撃攻撃・防御力": { "stats": ["blast_atk", "blast_def"], "base": true },
     "体力":                 { "stat": "hp", "base": false },
     "打撃攻撃力":           { "stat": "strike_atk", "base": false },
     "射撃攻撃力":           { "stat": "blast_atk", "base": false },
@@ -34,8 +39,11 @@
     "射撃防御力":           { "stat": "blast_def", "base": false },
     "クリティカル":         { "stat": "critical", "base": false },
     "気力回復":             { "stat": "ki_recovery", "base": false },
+    "体力最大値":           { "stat": "hp", "base": false },
     "打撃・射撃攻撃力":     { "stats": ["strike_atk", "blast_atk"], "base": false },
     "打撃・射撃防御力":     { "stats": ["strike_def", "blast_def"], "base": false },
+    "打撃攻撃・防御力":     { "stats": ["strike_atk", "strike_def"], "base": false },
+    "射撃攻撃・防御力":     { "stats": ["blast_atk", "blast_def"], "base": false },
 
     "基礎打撃攻撃力アップ":   { "stat": "strike_atk", "base": true },
     "打撃攻撃力アップ":       { "stat": "strike_atk", "base": false },
@@ -57,7 +65,16 @@
     "ダメージガード":   { "other": true },
     "体力被回復量":     { "other": true },
     "体力回復量":       { "other": true },
+    "被回復量":         { "other": true },
     "必殺技与ダメージ": { "other": true },
+    "必殺与ダメージ":   { "other": true },
+    "究極・覚醒与ダメージ": { "other": true },
+    "究極与ダメージ":   { "other": true },
+    "打撃与ダメージ":   { "other": true },
+    "射撃与ダメージ":   { "other": true },
+    "打撃アーツ与ダメージ": { "other": true },
+    "射撃アーツ与ダメージ": { "other": true },
+    "さらに、味方の自爆による与ダメージ": { "other": true },
     "クリティカル発生率": { "other": true },
     "クリティカルダメージ": { "other": true }
   }
