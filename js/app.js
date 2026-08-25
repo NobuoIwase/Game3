@@ -3,10 +3,10 @@
 // エラーメッセージはすべて日本語で、原因と対処が分かる文言にする（§6）。
 
 import { STATS, STAT_LABELS, computeStat, marginalValues } from './calc.js';
-import { sumFragmentEffects, fragmentStatEffects, lookupEffectName } from './effects.js';
+import { sumFragmentEffects, fragmentStatEffects, lookupEffectName, conditionMatches } from './effects.js';
 import {
-  optimizeParty, abilityCorrections, canEquip, characterDetail,
-  statBase, autoAbilityLevel, memberAbilityGroups,
+  optimizeParty, partyAbilityCorrections, canEquip, characterDetail,
+  statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -17,12 +17,13 @@ const state = { game: null, my: null, overrides: null };
 
 const ui = {
   tab: 'party',
-  party: { memberIds: ['', '', '', '', '', ''], equips: {} }, // equips: cid → [fragId|null,...]
+  // mode: 'standard'（バトル3体＋ゼンカイ枠3体） | 'proud'（プラウドバトル: 1戦目3体＋2戦目3体）
+  party: { mode: 'standard', memberIds: ['', '', '', '', '', ''], equips: {} }, // equips: cid → [fragId|null,...]
   displayStat: 'strike_atk',
   opt: {
     targets: 'battle', mode: 'single', stat: 'strike_atk',
     preset: 'attack', weights: Object.fromEntries(STATS.map((s) => [s, 0])),
-    allowDup: false,
+    optimizeLeader: true,
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
   fragFilter: { q: '', rarity: '', ownedOnly: false },
@@ -75,7 +76,7 @@ function applyCharSortFilter(defs, f) {
     : null;
   let list = defs.filter((d) =>
     (!q || (d.name || '').includes(q) || (d.card_no || '').includes(q)) &&
-    (f.els.length === 0 || f.els.includes(d.element)) &&
+    (f.els.length === 0 || f.els.some((e2) => (d.elements || [d.element]).includes(e2))) &&
     (f.rarities.length === 0 || f.rarities.includes(d.rarity)) &&
     (!f.ll || d.lf) &&
     (f.styles.length === 0 || f.styles.some((t) => (d.tags || []).includes(t))) &&
@@ -115,7 +116,7 @@ function charFilterControls(f, onChange) {
     if (i >= 0) arr.splice(i, 1); else arr.push(v);
   };
   return el('div', {},
-    el('div', { class: 'filter-row' },
+    el('div', { class: 'filter-row sticky-bar' },
       el('input', {
         type: 'search', value: f.q, placeholder: '名前・カード番号で検索',
         oninput: (e) => { f.q = e.target.value; onChange(); },
@@ -163,6 +164,15 @@ const PRESETS = {
   defense: { label: '耐久特化', weights: { hp: 1, strike_def: 0.7, blast_def: 0.7 } },
   balance: { label: 'バランス', weights: { hp: 0.6, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.5, blast_def: 0.5, critical: 0.2, ki_recovery: 0.1 } },
 };
+
+// バトルスタイル → 長所を伸ばす最適化目標（提案機能）。
+// タイプに合ったステータスほど基礎値が高く、%補正の効果も大きい。
+const STYLE_OBJECTIVES = [
+  { tag: 13002, opt: { mode: 'single', stat: 'strike_atk' }, objLabel: '打撃攻撃力の単一最大化', metric: 'strike_atk' },
+  { tag: 13003, opt: { mode: 'single', stat: 'blast_atk' }, objLabel: '射撃攻撃力の単一最大化', metric: 'blast_atk' },
+  { tag: 13001, opt: { mode: 'preset', preset: 'defense' }, objLabel: '耐久特化プリセット', metric: 'hp' },
+  { tag: 13000, opt: { mode: 'preset', preset: 'defense' }, objLabel: '耐久特化プリセット', metric: 'hp' },
+];
 
 // ---------------------------------------------------------------- DOM ヘルパ
 
@@ -248,6 +258,17 @@ function charMy(id) { return state.my.characters[String(id)]; }
 function isOwned(id) { return !!charMy(id); }
 const zeroStats = () => Object.fromEntries(STATS.map((s) => [s, 0]));
 
+/** フラグメント所持数。初期値は6枚（未設定時）。タップで自由に増減できる */
+const DEFAULT_FRAG_COUNT = 6;
+function fragCount(id) {
+  const v = state.my.fragments[String(id)];
+  return v == null ? DEFAULT_FRAG_COUNT : Math.max(0, Number(v) || 0);
+}
+async function setFragCount(id, n) {
+  state.my.fragments[String(id)] = Math.max(0, Math.floor(n));
+  await persistMy();
+}
+
 function defaultCharMy(def) {
   return {
     stars: 7, equip_slots: 3,
@@ -262,8 +283,45 @@ function partyMembers() {
   return ui.party.memberIds.filter((id) => id && charDef(id))
     .map((id) => ({ character: charDef(id), my: charMy(id) || defaultCharMy(charDef(id)) }));
 }
+/** バトルメンバー: スタンダード=上段3体 / プラウド=6体全員（1戦目・2戦目とも出撃） */
 function battleIds() {
-  return ui.party.memberIds.slice(0, 3).filter((id) => id && charDef(id));
+  const ids = ui.party.mode === 'proud' ? ui.party.memberIds : ui.party.memberIds.slice(0, 3);
+  return ids.filter((id) => id && charDef(id));
+}
+/** プラウド時のチーム分け（1戦目=枠1-3 / 2戦目=枠4-6） */
+function proudTeams() {
+  if (ui.party.mode !== 'proud') return null;
+  return [
+    ui.party.memberIds.slice(0, 3).filter((id) => id && charDef(id)),
+    ui.party.memberIds.slice(3, 6).filter((id) => id && charDef(id)),
+  ].filter((t) => t.length > 0);
+}
+/**
+ * 効果条件（「バトルメンバーに〜がいると」）の判定文脈をキャラごとに作る。
+ * スタンダード: 全員の文脈 = バトル3体 / プラウド: 自分のチーム3体
+ */
+function battleContexts(members) {
+  const info = (m) => ({
+    id: m.character.id, tags: m.character.tags,
+    element: m.character.element, elements: m.character.elements,
+  });
+  const ctxs = {};
+  if (ui.party.mode === 'proud') {
+    for (const range of [[0, 3], [3, 6]]) {
+      const teamIds = ui.party.memberIds.slice(range[0], range[1]).filter(Boolean).map(String);
+      const teamMembers = members.filter((m) => teamIds.includes(String(m.character.id)));
+      for (const m of teamMembers) {
+        ctxs[String(m.character.id)] = { selfId: m.character.id, members: teamMembers.map(info) };
+      }
+    }
+  } else {
+    const bs = battleIds().map(String);
+    const bm = members.filter((m) => bs.includes(String(m.character.id)));
+    for (const m of members) {
+      ctxs[String(m.character.id)] = { selfId: m.character.id, members: bm.map(info) };
+    }
+  }
+  return ctxs;
 }
 function memberEquips(cid) {
   const slots = Number(charMy(cid)?.equip_slots) || 3;
@@ -289,7 +347,8 @@ function assignedCount(fid, exclude = null) {
 function syncPartyToMyData() {
   state.my.parties = [{
     name: '編成1',
-    member_ids: ui.party.memberIds.filter(Boolean).map(Number),
+    mode: ui.party.mode,
+    member_ids: ui.party.memberIds.map(Number),
     battle_ids: battleIds().map(Number),
     equips: ui.party.equips,
     display_stat: ui.displayStat,
@@ -299,9 +358,10 @@ function syncPartyToMyData() {
 function restorePartyFromMyData() {
   const p = state.my.parties?.[0];
   if (!p) return;
-  const ids = (p.member_ids || []).map(String);
+  const ids = (p.member_ids || []).map((x) => (x ? String(x) : ''));
   ui.party.memberIds = [0, 1, 2, 3, 4, 5].map((i) => ids[i] || '');
   ui.party.equips = p.equips || {};
+  ui.party.mode = p.mode === 'proud' ? 'proud' : 'standard';
   if (p.display_stat) ui.displayStat = p.display_stat;
   if (p.opt) Object.assign(ui.opt, p.opt);
 }
@@ -365,7 +425,7 @@ function switchTab(name) {
 function charTile(def, opts = {}) {
   const owned = isOwned(def.id);
   return el('div', {
-    class: `char-tile el-${def.element}${owned ? '' : ' not-owned'}`,
+    class: `char-tile el-${def.element}`,
     onclick: opts.onclick,
   },
     lazyImg(def.image, def.name),
@@ -377,7 +437,7 @@ function charTile(def, opts = {}) {
 }
 
 function fragTile(f, opts = {}) {
-  const count = state.my.fragments[String(f.id)] || 0;
+  const count = fragCount(f.id);
   const used = assignedCount(f.id, opts.exclude);
   return el('div', {
     class: `frag-tile fr-${f.rarity || 'default'}${count > 0 ? '' : ' not-owned'}${opts.disabled ? ' disabled' : ''}`,
@@ -386,6 +446,7 @@ function fragTile(f, opts = {}) {
   },
     lazyImg(f.icon, f.name),
     used > 0 ? el('div', { class: 'equipped-badge' }, '装備中') : null,
+    isTournamentOnly(f) ? el('div', { class: 'top-badge' }, '力の大会') : null,
     el('div', { class: 'count-badge' }, opts.showRemaining ? `残${Math.max(0, count - used)}` : `×${count}`));
 }
 
@@ -393,32 +454,75 @@ function fragTile(f, opts = {}) {
 
 function renderParty() {
   const root = $('#party-view');
+  const proud = ui.party.mode === 'proud';
   const members = partyMembers();
   const bIds = battleIds();
-  const ext = members.length ? abilityCorrections(members, bIds, state.game.effectMap) : {};
+  const teams = proudTeams();
+  const ext = members.length
+    ? partyAbilityCorrections({
+        members, battleIds: bIds, teams, effectMap: state.game.effectMap,
+        leaderId: ui.party.memberIds[0] || null,
+        leaders: proud ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null] : undefined,
+      })
+    : {};
+  const contexts = battleContexts(members);
 
-  // 表示ステータスの合計（バトル3体の❸合計）
-  let battleTotal = 0;
+  // Z/ZENKAIアビリティの関係数（◎×N。スタンダード=パーティ6体 / プラウド=チーム内）
+  const relations = {};
+  if (proud) {
+    for (const range of [[0, 3], [3, 6]]) {
+      const teamIds = ui.party.memberIds.slice(range[0], range[1]).filter(Boolean).map(String);
+      const tm = members.filter((m) => teamIds.includes(String(m.character.id)));
+      if (tm.length) Object.assign(relations, zRelationCounts(tm, state.game.effectMap));
+    }
+  } else if (members.length) {
+    Object.assign(relations, zRelationCounts(members, state.game.effectMap));
+  }
+  if (!ui._prevRel) ui._prevRel = {};
+
+  // 表示ステータスの合計（スタンダード=バトル3体 / プラウド=チーム別）
+  const totals = [0, 0];
   const details = new Map();
   for (const m of members) {
     const cid = String(m.character.id);
     const fragList = memberEquips(cid).filter(Boolean).map(fragDef).filter(Boolean);
-    const d = characterDetail({ member: m, ext: ext[cid], fragmentList: fragList, effectMap: state.game.effectMap });
+    const d = characterDetail({
+      member: m, ext: ext[cid], fragmentList: fragList,
+      effectMap: state.game.effectMap, context: contexts[cid],
+    });
     details.set(cid, d);
-    if (bIds.map(String).includes(cid) && d.stats[ui.displayStat]) {
-      battleTotal += d.stats[ui.displayStat].final;
-    }
+    const st = d.stats[ui.displayStat];
+    if (!st) continue;
+    const slotIdx = ui.party.memberIds.findIndex((x) => String(x) === cid);
+    if (proud) totals[slotIdx < 3 ? 0 : 1] += st.final;
+    else if (bIds.map(String).includes(cid)) totals[0] += st.final;
   }
+
+  const slotLabel = (i) => proud
+    ? (i < 3 ? `1戦目 ${i + 1}` : `2戦目 ${i - 2}`)
+    : (i < 3 ? `バトル ${i + 1}` : `ゼンカイ枠 ${i - 2}`);
 
   const slot = (i) => {
     const id = ui.party.memberIds[i];
     const def = id ? charDef(id) : null;
+    const isLeader = def && (proud ? (i === 0 || i === 3) : i === 0);
+    const rel = def ? (relations[String(id)] || 0) : 0;
+    const powered = def && rel > (ui._prevRel[String(id)] || 0);
+    const tile = def ? charTile(def, { onclick: () => openCharPicker(i), showOwned: false }) : null;
+    if (tile && rel > 0) {
+      tile.append(el('div', { class: 'rel-badge' }, `◎×${rel}`));
+      if (powered) tile.classList.add('powerup');
+    }
     return el('div', { class: 'party-slot' },
-      i === 0 && def ? el('div', { class: 'leader-badge' }, 'LEADER') : null,
-      def
-        ? charTile(def, { onclick: () => openCharPicker(i), showOwned: false })
-        : el('div', { class: 'slot-empty', onclick: () => openCharPicker(i) }, '＋'),
-      el('div', { class: 'party-label' }, i < 3 ? `バトル ${i + 1}` : `ベンチ ${i - 2}`));
+      isLeader ? el('div', { class: 'leader-badge' }, 'LEADER') : null,
+      tile || el('div', { class: 'slot-empty', onclick: () => openCharPicker(i) }, '＋'),
+      el('div', { class: 'party-label' }, slotLabel(i)));
+  };
+
+  const memberBadge = (cid) => {
+    const idx = ui.party.memberIds.findIndex((x) => String(x) === cid);
+    if (proud) return el('span', { class: 'badge ok' }, idx < 3 ? '1戦目' : '2戦目');
+    return idx < 3 ? el('span', { class: 'badge ok' }, '出撃') : el('span', { class: 'badge ng' }, 'ゼンカイ枠');
   };
 
   const memberCard = (m) => {
@@ -426,11 +530,10 @@ function renderParty() {
     const d = details.get(cid);
     const st = d?.stats[ui.displayStat];
     const equips = memberEquips(cid);
-    return el('div', { class: `member-card el-${m.character.element}` },
+    return el('div', { class: `member-card el-${m.character.element}${ui._flashCards ? ' flash' : ''}` },
       el('div', { class: 'portrait', onclick: () => openCharSheet(cid) }, lazyImg(m.character.image, m.character.name)),
       el('div', { class: 'm-body' },
-        el('div', { class: 'm-name' }, m.character.name,
-          bIds.map(String).includes(cid) ? el('span', { class: 'badge ok' }, '出撃') : el('span', { class: 'badge ng' }, 'ベンチ')),
+        el('div', { class: 'm-name' }, m.character.name, memberBadge(cid)),
         el('div', { class: 'm-sub', style: 'display:flex;align-items:center;gap:6px' },
           m.character.card_no,
           el('span', {}, starsSelectCompact(cid, m.my)),
@@ -449,25 +552,57 @@ function renderParty() {
               el('span', { class: 'v' }, fmt0(st.final)),
               ' ',
               el('span', { class: 'up' }, `フラグ換算 +${fmt(st.fragTotal, 1)}% / 補正 +${fmt(st.corr5, 0)}%`))
-          : el('div', { class: 'm-stats' }, el('span', { class: 'small-note' }, 'ステータス未取得'))));
+          : el('div', { class: 'm-stats' }, el('span', { class: 'small-note' }, 'ステータス未取得')),
+        d?.conditionalOff?.length
+          ? el('div', { class: 'effline' },
+              el('span', { class: 'unknown', title: d.conditionalOff.map((c) => `${c.fragmentName}: ${c.cond_raw}${c.text}+${c.value}%`).join('\n') },
+                `⚠ 条件未達で未発動の効果 ${d.conditionalOff.length} 件（${d.conditionalOff.map((c) => `${c.text}+${c.value}%`).join(' / ')}）`))
+          : null));
   };
 
+  const statSelect = el('select', {
+    style: 'width:auto;display:inline-block;padding:2px 6px;margin:0;font-size:12px',
+    onchange: (e) => { ui.displayStat = e.target.value; persistMy(); renderParty(); },
+  }, STATS.map((s) => el('option', { value: s, selected: ui.displayStat === s }, STAT_LABELS[s])));
+
   root.replaceChildren(...nodes(
-    el('div', { class: 'party-summary' },
-      el('div', {}, 'バトル3体 ',
-        el('select', {
-          style: 'width:auto;display:inline-block;padding:2px 6px;margin:0;font-size:12px',
-          onchange: (e) => { ui.displayStat = e.target.value; persistMy(); renderParty(); },
-        }, STATS.map((s) => el('option', { value: s, selected: ui.displayStat === s }, STAT_LABELS[s]))),
-        ' 合計'),
-      el('div', { class: 'val' }, fmt0(battleTotal))),
+    el('div', { class: 'chip-row', style: 'margin-top:6px' },
+      el('button', {
+        class: `chip${!proud ? ' on' : ''}`,
+        onclick: async () => { ui.party.mode = 'standard'; await persistMy(); renderParty(); },
+      }, 'スタンダード'),
+      el('button', {
+        class: `chip${proud ? ' on' : ''}`,
+        onclick: async () => { ui.party.mode = 'proud'; await persistMy(); renderParty(); },
+      }, 'プラウドバトル')),
+    proud
+      ? el('div', { class: 'party-summary' },
+          el('div', {}, statSelect, ' チーム別合計'),
+          el('div', {},
+            el('span', { class: 'val' }, fmt0(totals[0])),
+            el('span', { class: 'small-note' }, ' / '),
+            el('span', { class: 'val' }, fmt0(totals[1]))))
+      : el('div', { class: 'party-summary' },
+          el('div', {}, 'バトル3体 ', statSelect, ' 合計'),
+          el('div', { class: 'val' }, fmt0(totals[0]))),
     el('div', { class: 'party-grid' }, [0, 1, 2].map(slot)),
     el('div', { class: 'party-grid' }, [3, 4, 5].map(slot)),
+    proud
+      ? el('p', { class: 'hint' },
+          'プラウドバトル: 1戦目と2戦目は同一キャラを選べません（6体すべて出撃）。' +
+          'アビリティ補正と効果条件はチーム内の3体だけで判定されます。' +
+          '3戦目は1・2戦目のキャラを2体まで再選出できます（3体とも同一は不可）。')
+      : el('p', { class: 'hint' },
+          '上段がバトル出撃3体、下段はゼンカイ枠（Zアビ・ZENKAIアビがパーティ全体に乗ります。ZENKAI覚醒キャラ推奨）。'),
     members.length === 0
-      ? el('p', { class: 'hint' }, '「＋」からキャラを選んでパーティを組んでください。所持キャラは「キャラ」タブでも登録できます。')
+      ? el('p', { class: 'hint' }, '「＋」からキャラを選んでパーティを組んでください。')
       : null,
     members.map(memberCard),
-    renderOptimizerPanel()));
+    renderOptimizerPanel(),
+    renderSuggestionCard(),
+    renderZenkaiSuggestCard()));
+  ui._prevRel = { ...relations };
+  ui._flashCards = false;
 }
 
 function renderOptimizerPanel() {
@@ -494,23 +629,28 @@ function renderOptimizerPanel() {
     m.mode === 'custom'
       ? el('div', { class: 'grid2' }, STATS.map((s) => labeledNum(`${STAT_LABELS[s]} の重み`, m.weights, s)))
       : null,
+    ui.party.mode === 'proud'
+      ? el('p', { class: 'small-note' }, 'プラウドバトルでは6体全員に配分します。')
+      : el('div', {},
+          el('label', { class: 'check' },
+            el('input', {
+              type: 'radio', name: 'opt-targets', checked: m.targets === 'battle',
+              onchange: () => { m.targets = 'battle'; },
+            }), 'バトル出撃3体に配分'),
+          el('label', { class: 'check' },
+            el('input', {
+              type: 'radio', name: 'opt-targets', checked: m.targets === 'all',
+              onchange: () => { m.targets = 'all'; },
+            }), 'ゼンカイ枠も含む6体全員に配分')),
     el('label', { class: 'check' },
       el('input', {
-        type: 'radio', name: 'opt-targets', checked: m.targets === 'battle',
-        onchange: () => { m.targets = 'battle'; },
-      }), 'バトル出撃3体に配分'),
-    el('label', { class: 'check' },
-      el('input', {
-        type: 'radio', name: 'opt-targets', checked: m.targets === 'all',
-        onchange: () => { m.targets = 'all'; },
-      }), 'パーティ6体全員に配分'),
-    el('label', { class: 'check' },
-      el('input', {
-        type: 'checkbox', checked: m.allowDup,
-        onchange: (e) => { m.allowDup = e.target.checked; },
-      }), '同一フラグメントの重複装備を許可（実機未確認）'),
+        type: 'checkbox', checked: m.optimizeLeader !== false,
+        onchange: (e) => { m.optimizeLeader = e.target.checked; },
+      }), 'リーダー枠も最適化する（Zアビ特殊ルールを考慮して入替え）'),
     el('button', { class: 'btn', onclick: runOptimize }, '最適化を実行'),
-    el('p', { class: 'small-note' }, '所持数を入れたフラグメントだけが対象です（「フラグ」タブで入力）。結果は上の装備枠に反映されます。'));
+    el('p', { class: 'small-note' },
+      '同一フラグメントは同じキャラに重複装備できません（別キャラは所持数の範囲で同時装備可）。' +
+      '所持数は「フラグ」タブで調整できます（初期値6枚）。結果は上の装備枠に反映されます。'));
 }
 
 function currentWeights() {
@@ -520,36 +660,280 @@ function currentWeights() {
   return { ...m.weights };
 }
 
+/**
+ * 提案機能: バトルメンバーのタイプ構成（打撃/射撃/援護/防御タイプ）から
+ * 「より長所を伸ばせる最適化」を計算する。ユーザー指定の目標と同じなら null。
+ */
+function computeStyleSuggestion(members, baseParams, best, mainResult) {
+  const targetIds = new Set(Object.keys(mainResult.assignments));
+  const targetMembers = members.filter((m) => targetIds.has(String(m.character.id)));
+  if (targetMembers.length === 0) return null;
+
+  // タイプ集計 → 最多タイプの目標
+  const styleCount = new Map();
+  for (const so of STYLE_OBJECTIVES) {
+    const n = targetMembers.filter((m) => (m.character.tags || []).includes(so.tag)).length;
+    if (n > 0) styleCount.set(so, n);
+  }
+  const ranked = [...styleCount.entries()].sort((a, b) => b[1] - a[1]);
+  if (ranked.length === 0) return null;
+  const [dominant, count] = ranked[0];
+
+  // すでに同じ目標なら提案不要
+  const same = dominant.opt.mode === 'single'
+    ? (ui.opt.mode === 'single' && ui.opt.stat === dominant.opt.stat)
+    : (ui.opt.mode === 'preset' && ui.opt.preset === dominant.opt.preset);
+  if (same) return null;
+
+  const sugWeights = dominant.opt.mode === 'single'
+    ? { [dominant.opt.stat]: 1 }
+    : { ...PRESETS[dominant.opt.preset].weights };
+  const sugResult = optimizeParty({
+    ...baseParams,
+    weights: sugWeights,
+    leaderId: ui.party.mode === 'proud' ? undefined : best.leaders[0],
+    leaders: ui.party.mode === 'proud' ? best.leaders : undefined,
+  });
+
+  // 比較指標: 提案目標の主ステータスの合計 ❸（同じリーダー・同じ対象で比較）
+  const totalOf = (assignments, ext) => targetMembers.reduce((acc, m) => {
+    const cid = String(m.character.id);
+    const ids = assignments[cid]?.ids || [];
+    const d = characterDetail({
+      member: m, ext: ext[cid],
+      fragmentList: ids.map(fragDef).filter(Boolean),
+      effectMap: state.game.effectMap,
+      context: baseParams.contexts[cid],
+    });
+    return acc + (d.stats[dominant.metric]?.final || 0);
+  }, 0);
+  const sugTotal = totalOf(sugResult.assignments, sugResult.ext);
+  const curTotal = totalOf(mainResult.assignments, mainResult.ext);
+  if (!(sugTotal > curTotal * 1.001)) return null; // ほぼ差が無いなら提案しない
+
+  const styleTag = tagName(dominant.tag);
+  return {
+    text: `このパーティは「${styleTag}」が ${count}/${targetMembers.length} 体です。` +
+      `${dominant.objLabel}に切り替えると ${STAT_LABELS[dominant.metric]} 合計が ` +
+      `${fmt0(curTotal)} → ${fmt0(sugTotal)}（+${fmt(((sugTotal / curTotal) - 1) * 100, 1)}%）になります。`,
+    optPatch: dominant.opt,
+    assignments: sugResult.assignments,
+    exact: sugResult.exact,
+  };
+}
+
+async function applySuggestion() {
+  const s = ui.suggestion;
+  if (!s) return;
+  Object.assign(ui.opt, s.optPatch);
+  for (const [cid, asg] of Object.entries(s.assignments)) {
+    const slots = Number(charMy(cid)?.equip_slots) || 3;
+    const arr = asg.ids.slice(0, slots);
+    while (arr.length < slots) arr.push(null);
+    ui.party.equips[cid] = arr;
+  }
+  ui.suggestion = null;
+  await persistMy();
+  renderParty();
+  showMsg('ok', '提案の最適化を適用しました。');
+}
+
+function renderSuggestionCard() {
+  const s = ui.suggestion;
+  if (!s) return null;
+  return el('div', { class: 'card sub-card' },
+    el('h3', {}, '💡 提案: 長所を伸ばす最適化'),
+    el('p', { class: 'hint' }, s.text),
+    el('button', { class: 'btn secondary', onclick: applySuggestion }, 'この提案を適用'));
+}
+
+// ---------------------------------------------------------------- ゼンカイ枠の提案（アビリティ恩恵×所持アーツ）
+
+const RARE_ARTS = new Set(['必殺', '特殊', '究極', '覚醒']);
+
+/**
+ * ゼンカイ枠（スタンダードの下段3枠）の候補を採点する。
+ * デッキは非出撃メンバーの所持アーツも含めて構成されるため、
+ * アビリティ恩恵だけでなくアーツ構成（必殺・特殊などのレアアーツ／特化ステに合うアーツ）も並べる。
+ */
+function computeZenkaiSuggestions() {
+  const battleSet = new Set(battleIds().map(String));
+  const battleMembers = partyMembers().filter((m) => battleSet.has(String(m.character.id)));
+  if (battleMembers.length === 0) return null;
+  const weights = currentWeights();
+  const partyIds = new Set(ui.party.memberIds.filter(Boolean).map(String));
+  const atkFocus = (weights.strike_atk || 0) >= (weights.blast_atk || 0)
+    ? ((weights.strike_atk || 0) > 0 ? '打撃' : null)
+    : '射撃';
+
+  const cands = [];
+  for (const def of Object.values(state.game.characters)) {
+    const cid = String(def.id);
+    if (partyIds.has(cid)) continue;
+    const my = charMy(cid) || defaultCharMy(def);
+    const ab = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
+    let benefit = 0;
+    let hpBenefit = 0;
+    for (const groups of [ab.z, ab.zenkai]) {
+      for (const g of groups) {
+        for (const m of battleMembers) {
+          if (!conditionMatches(g.cond, m.character)) continue;
+          for (const e of g.effects) {
+            if (e.base === false) continue;
+            benefit += (weights[e.stat] || 0) * e.value;
+            if (e.stat === 'hp') hpBenefit += e.value;
+          }
+        }
+      }
+    }
+    const arts = def.arts || [];
+    const rare = arts.filter((a) => RARE_ARTS.has(a.type)).length;
+    const focus = atkFocus ? arts.filter((a) => a.type === atkFocus).length : 0;
+    if (benefit > 0 || rare > 0 || focus > 0 || hpBenefit > 0) {
+      cands.push({ def, benefit, hpBenefit, rare, focus });
+    }
+  }
+  const hasArts = Object.values(state.game.characters).some((d) => (d.arts || []).length > 0);
+  const top3 = (arr) => arr.slice(0, 3);
+  return {
+    hasArts,
+    atkFocus,
+    ability: top3([...cands].sort((a, b) => b.benefit - a.benefit || b.rare - a.rare)),
+    rare: top3([...cands].filter((c) => c.rare > 0).sort((a, b) => b.rare - a.rare || b.benefit - a.benefit)),
+    focus: atkFocus ? top3([...cands].filter((c) => c.focus > 0).sort((a, b) => b.focus - a.focus || b.benefit - a.benefit)) : [],
+    hp: top3([...cands].filter((c) => c.hpBenefit > 0).sort((a, b) => b.hpBenefit - a.hpBenefit || b.benefit - a.benefit)),
+  };
+}
+
+function renderZenkaiSuggestCard() {
+  if (ui.party.mode !== 'standard' || battleIds().length === 0) return null;
+  const box = el('div', {});
+  let computed = false;
+  const details = el('details', {
+    ontoggle: (e) => {
+      if (!e.target.open || computed) return;
+      computed = true;
+      const s = computeZenkaiSuggestions();
+      if (!s) { box.replaceChildren(el('p', { class: 'hint' }, 'バトルメンバーを選ぶと提案できます。')); return; }
+      const row = (label, list, metric) => list.length === 0 ? null : el('div', {},
+        el('div', { class: 'item-title', style: 'margin-top:8px' }, label),
+        el('div', { style: 'display:flex;gap:6px;align-items:flex-start' },
+          el('div', { class: 'char-grid', style: 'flex:1;grid-template-columns:repeat(3, 1fr)' },
+            list.map((c) => {
+              const tile = charTile(c.def, { onclick: () => openCharSheet(String(c.def.id)) });
+              tile.append(el('div', { class: 'rel-badge' }, metric(c)));
+              return tile;
+            })),
+          el('button', {
+            class: 'btn secondary small', style: 'flex:none;align-self:center',
+            onclick: async () => {
+              const ids = list.map((c) => String(c.def.id));
+              ids.forEach((cid, i) => {
+                if (!isOwned(cid)) state.my.characters[cid] = defaultCharMy(charDef(cid));
+                ui.party.memberIds[3 + i] = cid;
+              });
+              await persistMy();
+              ui._flashCards = true;
+              renderParty();
+              showMsg('ok', 'ゼンカイ枠に提案メンバーをセットしました。');
+            },
+          }, 'セット')));
+      box.replaceChildren(...nodes(
+        el('p', { class: 'hint' },
+          'バトル3体への Z・ZENKAIアビリティ恩恵（現在の重み換算）と、デッキに入る所持アーツの構成から候補を挙げます。' +
+          (s.hasArts ? '' : '（アーツデータは未取得のためアビリティ恩恵のみで並べています）')),
+        row('① アビリティ恩恵 重視', s.ability, (c) => `+${fmt(c.benefit, 0)}`),
+        row('② 必殺・特殊アーツ持ち', s.rare, (c) => `レア${c.rare}枚`),
+        s.atkFocus ? row(`③ ${s.atkFocus}アーツで特化を伸ばす`, s.focus, (c) => `${s.atkFocus}${c.focus}枚`) : null,
+        row('④ 体力アップの貴重な恩恵', s.hp, (c) => `HP+${fmt(c.hpBenefit, 0)}%`)));
+    },
+  },
+    el('summary', {}, 'ゼンカイ枠の提案を表示（アビリティ恩恵×アーツ構成）'),
+    box);
+  return el('div', { class: 'card sub-card' },
+    el('h3', {}, '💡 提案: ゼンカイ枠'),
+    details);
+}
+
 async function runOptimize() {
   clearMsgs();
+  const proud = ui.party.mode === 'proud';
   const members = partyMembers();
   if (members.length === 0) {
     showMsg('error', '■ パーティが空です\nキャラを1体以上入れてください。');
     return;
   }
   const bIds = battleIds();
-  if (ui.opt.targets === 'battle' && bIds.length === 0) {
+  if (!proud && ui.opt.targets === 'battle' && bIds.length === 0) {
     showMsg('error', '■ バトル出撃メンバーがいません\n上段の枠に1体以上入れてください。');
     return;
   }
-  const ownedIds = Object.keys(state.my.fragments).filter((id) => state.my.fragments[id] > 0);
-  if (ownedIds.length === 0) {
-    showMsg('error', '■ 所持フラグメントが未登録です\n「フラグ」タブで所持数を入力してください。');
-    return;
-  }
-  if (!checkRarities(ownedIds)) return;
+  // 所持数（初期値6枚・ユーザー調整分を上書き）
+  const counts = {};
+  for (const id of Object.keys(state.game.fragments)) counts[id] = fragCount(id);
+  if (!checkRarities(Object.keys(counts).filter((id) => counts[id] > 0))) return;
   const weights = currentWeights();
   if (!Object.values(weights).some((w) => w > 0)) {
     showMsg('error', '■ 重みがすべて 0 です');
     return;
   }
-  const result = optimizeParty({
-    members, battleIds: bIds,
-    fragmentsById: state.game.fragments,
-    counts: { ...state.my.fragments },
+  // リーダー最適化: リーダー枠のZアビ特殊ルールで総合スコアが最も高くなるリーダーを探索する
+  const teams = proudTeams();
+  const contexts = battleContexts(members);
+  const baseParams = {
+    members, battleIds: bIds, teams, contexts,
+    fragmentsById: state.game.fragments, counts,
     weights, effectMap: state.game.effectMap,
-    targets: ui.opt.targets, allowDuplicates: ui.opt.allowDup,
-  });
+    targets: proud ? 'all' : ui.opt.targets,
+  };
+  const currentLeaders = proud
+    ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null]
+    : [ui.party.memberIds[0] || null];
+  let leaderCombos;
+  if (ui.opt.optimizeLeader !== false) {
+    if (proud) {
+      const t1 = ui.party.memberIds.slice(0, 3).filter(Boolean);
+      const t2 = ui.party.memberIds.slice(3, 6).filter(Boolean);
+      leaderCombos = (t1.length ? t1 : [null]).flatMap((a) => (t2.length ? t2 : [null]).map((b) => [a, b]));
+    } else {
+      leaderCombos = bIds.map((id) => [id]);
+    }
+    if (leaderCombos.length === 0) leaderCombos = [currentLeaders];
+  } else {
+    leaderCombos = [currentLeaders];
+  }
+
+  let best = null;
+  for (const combo of leaderCombos) {
+    const r = optimizeParty({
+      ...baseParams,
+      leaderId: proud ? undefined : combo[0],
+      leaders: proud ? combo : undefined,
+    });
+    if (!best || r.totalScore > best.result.totalScore) best = { result: r, leaders: combo };
+  }
+  const result = best.result;
+
+  // 選ばれたリーダーをリーダー枠（スタンダード=枠1 / プラウド=各チーム先頭）へ移動する
+  const leaderChanged = [];
+  const moveToFront = (leaderId, base) => {
+    if (!leaderId) return;
+    const idx = ui.party.memberIds.findIndex((x) => String(x) === String(leaderId));
+    if (idx > base && idx < base + 3) {
+      [ui.party.memberIds[base], ui.party.memberIds[idx]] = [ui.party.memberIds[idx], ui.party.memberIds[base]];
+      leaderChanged.push(charDef(leaderId)?.name || leaderId);
+    }
+  };
+  if (proud) { moveToFront(best.leaders[0], 0); moveToFront(best.leaders[1], 3); }
+  else moveToFront(best.leaders[0], 0);
+
+  // 提案: パーティのタイプ構成に合わせて、より長所を伸ばせる最適化があれば計算しておく
+  ui.suggestion = null;
+  try {
+    ui.suggestion = computeStyleSuggestion(members, baseParams, best, result);
+  } catch (e) {
+    console.warn('提案の計算に失敗:', e);
+  }
   for (const [cid, asg] of Object.entries(result.assignments)) {
     const slots = Number(charMy(cid)?.equip_slots) || 3;
     const arr = asg.ids.slice(0, slots);
@@ -557,12 +941,14 @@ async function runOptimize() {
     ui.party.equips[cid] = arr;
   }
   await persistMy();
+  ui._flashCards = true; // 反映演出
   renderParty();
   reportUnknown(result.unknown);
   for (const w of [...new Set(result.warnings)]) showMsg('warn', `■ ${w}`);
   showMsg(result.exact ? 'ok' : 'warn',
-    result.exact ? '最適化が完了しました（厳密解）。装備枠に反映しました。'
-      : '最適化を打ち切りで終えました（暫定解）。装備枠に反映しました。');
+    (result.exact ? '最適化が完了しました（厳密解）。装備枠に反映しました。'
+      : '最適化を打ち切りで終えました（暫定解）。装備枠に反映しました。') +
+    (leaderChanged.length ? `\nリーダー枠を ${leaderChanged.join(' / ')} に変更しました（Zアビ特殊ルールで最も高くなる配置）。` : ''));
 }
 
 // ---------------------------------------------------------------- キャラ選択シート
@@ -576,7 +962,7 @@ function openCharPicker(slotIndex) {
   const rerenderGrid = () => {
     const inParty = new Set(ui.party.memberIds.filter(Boolean).map(String));
     const defs = applyCharSortFilter(Object.values(state.game.characters), filter);
-    grid.replaceChildren(...defs.slice(0, 300).map((d) => {
+    grid.replaceChildren(...defs.map((d) => {
       const tile = charTile(d, {
         onclick: async () => {
           const sid = String(d.id);
@@ -596,7 +982,6 @@ function openCharPicker(slotIndex) {
       if (inParty.has(String(d.id))) tile.append(el('div', { class: 'equipped-badge', style: 'position:absolute;top:0;left:0;right:0;font-size:8px;font-weight:900;text-align:center;background:linear-gradient(180deg,#ffa640,#e0641e);color:#fff' }, 'パーティ'));
       return tile;
     }));
-    if (defs.length > 300) grid.append(el('p', { class: 'hint' }, `${defs.length} 体中 300 体を表示中。検索・フィルタで絞り込んでください。`));
     if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当なし。フィルタをリセットしてください。'));
   };
   const renderControls = () => {
@@ -619,7 +1004,10 @@ function openCharPicker(slotIndex) {
     grid));
   renderControls();
   rerenderGrid();
-  openSheet(`${slotIndex < 3 ? `バトル ${slotIndex + 1}` : `ベンチ ${slotIndex - 2}`} のキャラを選択`, body);
+  const label = ui.party.mode === 'proud'
+    ? (slotIndex < 3 ? `1戦目 ${slotIndex + 1}` : `2戦目 ${slotIndex - 2}`)
+    : (slotIndex < 3 ? `バトル ${slotIndex + 1}` : `ゼンカイ枠 ${slotIndex - 2}`);
+  openSheet(`${label} のキャラを選択`, body);
 }
 
 // ---------------------------------------------------------------- フラグメント選択シート
@@ -628,15 +1016,21 @@ function fragSlotEffectsView(f, stars) {
   return (f.slots || []).map((slot) =>
     el('div', { class: 'slot-eff' },
       el('div', { class: 'sl' }, slot.label, slot.star7 ? `（★7で解放${stars < 7 ? '・現在の星では無効' : ''}）` : ''),
-      (slot.lines || []).map((line) => line.raw != null
-        ? el('div', { class: 'line raw' }, line.raw)
-        : el('div', { class: 'line' }, `${line.text} +${line.value}%${line.value_min != null ? `（最大値。${line.value_min}〜${line.value}%）` : ''}`))));
+      (slot.lines || []).map((line) => {
+        if (line.raw != null) return el('div', { class: 'line raw' }, line.raw);
+        const valueText = `${line.text} +${line.value}%${line.value_min != null ? `（最大値。${line.value_min}〜${line.value}%）` : ''}`;
+        if (line.cond) {
+          return el('div', { class: 'line' },
+            el('span', { style: 'color:var(--accent2)' }, `【条件】${line.cond_raw || ''} `), valueText,
+            el('span', { class: 'raw' }, '（編成が条件を満たすときだけ計算に含まれます）'));
+        }
+        return el('div', { class: 'line' }, valueText);
+      })));
 }
 
 function openFragPicker(cid, slotIdx) {
   const def = charDef(cid);
-  const my = charMy(cid) || defaultCharMy(def);
-  const filter = { q: '', ownedOnly: true };
+  const filter = { q: '', showTop: false };
   const body = el('div', {});
   const grid = el('div', { class: 'frag-grid' });
   const current = memberEquips(cid);
@@ -662,44 +1056,39 @@ function openFragPicker(cid, slotIdx) {
     const q = filter.q.trim();
     const list = Object.values(state.game.fragments)
       .filter((f) => canEquip(def, f))
-      .filter((f) => !filter.ownedOnly || (state.my.fragments[String(f.id)] || 0) > 0)
+      .filter((f) => filter.showTop || !isTournamentOnly(f))
       .filter((f) => !q || (f.name || '').includes(q))
-      .sort((a, b) => (state.my.fragments[String(b.id)] || 0) - (state.my.fragments[String(a.id)] || 0) || b.id - a.id);
-    grid.replaceChildren(...list.slice(0, 300).map((f) => {
+      .sort((a, b) => fragCount(b.id) - fragCount(a.id) || b.id - a.id);
+    grid.replaceChildren(...list.map((f) => {
       const sid = String(f.id);
-      const count = state.my.fragments[sid] || 0;
+      const count = fragCount(sid);
       const usedElsewhere = assignedCount(f.id, { cid, idx: slotIdx });
       const isCurrent = String(current[slotIdx] || '') === sid;
-      const dupInChar = !ui.opt.allowDup && memberEquips(cid).some((x, i) => i !== slotIdx && String(x || '') === sid);
-      const noneLeft = count > 0 && usedElsewhere >= count;
+      // 同一フラグメントは同じキャラに重複装備できない（実機仕様）
+      const dupInChar = memberEquips(cid).some((x, i) => i !== slotIdx && String(x || '') === sid);
+      const noneLeft = usedElsewhere >= count;
       return fragTile(f, {
         exclude: { cid, idx: slotIdx },
         showRemaining: true,
-        disabled: dupInChar || (noneLeft && !isCurrent && count > 0),
+        disabled: dupInChar || (noneLeft && !isCurrent),
         onclick: async () => {
           if (isCurrent) { await assign(null); return; } // タップで外す
-          if (count === 0) {
-            state.my.fragments[sid] = 1; // 未所持を選んだら所持数1として登録
-            showMsg('info', `「${f.name}」の所持数を 1 にしました（「フラグ」タブで変更できます）`);
-          }
           await assign(sid);
         },
       });
     }));
     if (list.length === 0) {
-      grid.append(el('p', { class: 'hint' }, filter.ownedOnly
-        ? 'このキャラが装備できる所持フラグメントがありません。「所持のみ」を外すと全候補から選べます（選ぶと所持数1で登録されます）。'
-        : 'このキャラが装備できるフラグメントがありません。'));
+      grid.append(el('p', { class: 'hint' }, 'このキャラが装備できるフラグメントがありません。'));
     }
   };
 
   body.append(
     slotRow,
     el('p', { class: 'hint', style: 'text-align:center' }, `${def.name} — スロット${slotIdx + 1}${current[slotIdx] ? '（装備中のものをタップすると外せます）' : ''}`),
-    el('div', { class: 'filter-row' },
+    el('div', { class: 'filter-row sticky-bar' },
       el('input', { type: 'search', placeholder: 'フラグメント名で検索', oninput: (e) => { filter.q = e.target.value; rerenderGrid(); } }),
       el('label', { class: 'check', style: 'margin:0;flex:none' },
-        el('input', { type: 'checkbox', checked: filter.ownedOnly, onchange: (e) => { filter.ownedOnly = e.target.checked; rerenderGrid(); } }), '所持のみ')),
+        el('input', { type: 'checkbox', checked: filter.showTop, onchange: (e) => { filter.showTop = e.target.checked; rerenderGrid(); } }), '力の大会も表示')),
     grid);
   rerenderGrid();
   openSheet('フラグメントを選択', body);
@@ -713,9 +1102,8 @@ function renderChars() {
   const grid = el('div', { class: 'char-grid' });
   const rerenderGrid = () => {
     const defs = applyCharSortFilter(Object.values(state.game.characters), f);
-    grid.replaceChildren(...defs.slice(0, 400).map((d) =>
+    grid.replaceChildren(...defs.map((d) =>
       charTile(d, { onclick: () => openCharSheet(String(d.id)) })));
-    if (defs.length > 400) grid.append(el('p', { class: 'hint' }, `${defs.length} 体中 400 体を表示中。検索・フィルタで絞り込んでください。`));
     if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当するキャラがいません。フィルタをリセットしてください。'));
   };
   root.replaceChildren(
@@ -889,20 +1277,20 @@ function renderFrags() {
   const rerenderGrid = () => {
     const q = f.q.trim();
     const list = Object.values(state.game.fragments)
-      .filter((x) => !f.ownedOnly || (state.my.fragments[String(x.id)] || 0) > 0)
+      .filter((x) => f.showTop || !isTournamentOnly(x))
       .filter((x) => !f.rarity || x.rarity === f.rarity)
       .filter((x) => !q || (x.name || '').includes(q))
       .sort((a, b) => b.id - a.id);
-    grid.replaceChildren(...list.slice(0, 400).map((x) =>
+    grid.replaceChildren(...list.map((x) =>
       fragTile(x, { onclick: () => openFragSheet(String(x.id)) })));
-    if (list.length > 400) grid.append(el('p', { class: 'hint' }, `${list.length} 件中 400 件を表示中。検索で絞り込んでください。`));
+    if (list.length === 0) grid.append(el('p', { class: 'hint' }, '該当なし'));
   };
   root.replaceChildren(
-    el('p', { class: 'hint' }, `全 ${Object.keys(state.game.fragments).length} 件 / 所持 ${Object.values(state.my.fragments).filter((n) => n > 0).length} 種。タップで詳細・所持数入力。`),
-    el('div', { class: 'filter-row' },
+    el('p', { class: 'hint' }, `全 ${Object.keys(state.game.fragments).length} 件。タップで詳細・所持数の調整（初期値6枚）。`),
+    el('div', { class: 'filter-row sticky-bar' },
       el('input', { type: 'search', value: f.q, placeholder: 'フラグメント名で検索', oninput: (e) => { f.q = e.target.value; rerenderGrid(); } }),
       el('label', { class: 'check', style: 'margin:0;flex:none' },
-        el('input', { type: 'checkbox', checked: f.ownedOnly, onchange: (e) => { f.ownedOnly = e.target.checked; rerenderGrid(); } }), '所持のみ')),
+        el('input', { type: 'checkbox', checked: !!f.showTop, onchange: (e) => { f.showTop = e.target.checked; rerenderGrid(); } }), '力の大会も表示')),
     el('div', { class: 'chip-row' },
       rarities.map((r) => el('button', {
         class: `chip${f.rarity === r ? ' on' : ''}`,
@@ -916,26 +1304,18 @@ function openFragSheet(fid) {
   const f = fragDef(fid);
   if (!f) return;
   const body = el('div', {});
-  const count = () => state.my.fragments[fid] || 0;
 
   const countRow = el('div', { class: 'row', style: 'align-items:center' });
   const renderCountRow = () => {
     countRow.replaceChildren(
       el('button', {
         class: 'btn secondary', style: 'flex:none;width:52px',
-        onclick: async () => {
-          const n = Math.max(0, count() - 1);
-          if (n === 0) delete state.my.fragments[fid]; else state.my.fragments[fid] = n;
-          await persistMy(); renderCountRow(); renderFrags();
-        },
+        onclick: async () => { await setFragCount(fid, fragCount(fid) - 1); renderCountRow(); renderFrags(); },
       }, '−'),
-      el('div', { style: 'text-align:center;font-size:20px;font-weight:800;color:var(--accent)' }, `所持 ${count()}`),
+      el('div', { style: 'text-align:center;font-size:20px;font-weight:800;color:var(--accent)' }, `所持 ${fragCount(fid)}`),
       el('button', {
         class: 'btn secondary', style: 'flex:none;width:52px',
-        onclick: async () => {
-          state.my.fragments[fid] = count() + 1;
-          await persistMy(); renderCountRow(); renderFrags();
-        },
+        onclick: async () => { await setFragCount(fid, fragCount(fid) + 1); renderCountRow(); renderFrags(); },
       }, '＋'));
   };
   renderCountRow();
@@ -948,11 +1328,12 @@ function openFragSheet(fid) {
       el('div', {},
         el('div', { class: 'item-title' }, f.name),
         el('div', { class: 'item-desc' }, f.rarity_label || RARITY_LABELS[f.rarity] || f.rarity || ''),
+        isTournamentOnly(f) ? el('div', { class: 'item-desc', style: 'color:var(--warn)' }, '力の大会専用（通常バトルの最適化からは除外されます）') : null,
         f.condition_text ? el('div', { class: 'item-desc' }, `装備条件: ${f.condition_text}`) : null)),
     countRow,
     el('h3', {}, '効果（数値は最大値）'),
     Array.isArray(f.slots) && f.slots.length
-      ? fragSlotEffectsView(f, 7)
+      ? el('div', {}, fragSlotEffectsView(f, 7))
       : el('div', {}, (f.effects || []).map((e2) => el('div', { class: 'effline' },
           e2.text ? `${e2.text} +${e2.value}%` : `${e2.base ? '基礎' : ''}${STAT_LABELS[e2.stat] || e2.stat} +${e2.value}%`))),
     (f.equip_char_ids || []).length
@@ -974,7 +1355,6 @@ const VERIFY_CASES = [
 function renderCalc() {
   const m = ui.calc;
   const root = $('#calc-form');
-  const ownedFragIds = Object.keys(state.my.fragments).filter((id) => state.my.fragments[id] > 0 && fragDef(id));
 
   const fillFromChar = () => {
     if (!m.charId) return;
@@ -1011,17 +1391,20 @@ function renderCalc() {
       labeledNum('フラグメント基礎なし合計 (%)', m, 'fragNonBase'));
   } else {
     const def = m.charId ? charDef(m.charId) : null;
-    const list = ownedFragIds.map((id) => fragDef(id)).filter((f) => !def || canEquip(def, f));
+    const list = def
+      ? Object.values(state.game.fragments).filter((f) => fragCount(f.id) > 0 && canEquip(def, f) && !isTournamentOnly(f))
+      : [];
     fragArea = el('div', { class: 'item-list' },
-      list.length === 0
-        ? el('p', { class: 'hint' }, '所持フラグメントがありません。「フラグ」タブで所持数を入力してください。')
+      !def
+        ? el('p', { class: 'hint' }, '先に上でキャラを選ぶと、そのキャラが装備できるフラグメントから選択できます。')
         : list.map((f) => el('div', { class: 'item' },
             el('input', {
               type: 'checkbox', checked: !!m.selected[f.id],
               onchange: (e) => { m.selected[f.id] = e.target.checked; },
             }),
             el('div', { class: 'grow' },
-              el('div', { class: 'item-title' }, f.name)))));
+              el('div', { class: 'item-title' }, f.name)))),
+      def ? el('p', { class: 'small-note' }, '※効果条件付きの効果は、この画面ではパーティ文脈が無いため適用されません（編成タブでは考慮されます）。') : null);
   }
 
   root.replaceChildren(el('div', { class: 'card' },

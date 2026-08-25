@@ -95,10 +95,16 @@ const ELEMENT_CODES = ['RED', 'YEL', 'PUR', 'GRN', 'BLU', 'LGT', 'DRK'];
  */
 function parseInlineConditions(condText, tagNameToId, unresolved) {
   const token = (part) => {
-    const m = part.match(/「(?:タグ|エピソード|属性|レアリティ|キャラクター)[:：]([^」]+)」/);
+    const m = part.match(/「(?:タグ|エピソード|属性|レアリティ|キャラクター|バトルスタイル)[:：]([^」]+)」/);
     if (!m) return null;
     const name = m[1].trim();
-    const id = tagNameToId[name] ?? tagNameToId[name.normalize('NFKC')];
+    // 「キャラクター：孫悟空(DBL16-01S)」のような括弧付きは、括弧内のカード番号タグ →
+    // 括弧を除いた名前タグ の順でフォールバックする
+    const paren = (name.match(/[（(]([^）)]+)[）)]$/) || [])[1];
+    const bare = name.replace(/[（(][^）)]*[）)]$/, '').trim();
+    const id = tagNameToId[name] ?? tagNameToId[name.normalize('NFKC')]
+      ?? (paren ? tagNameToId[paren] ?? tagNameToId[paren.normalize('NFKC')] : undefined)
+      ?? (bare !== name ? tagNameToId[bare] ?? tagNameToId[bare.normalize('NFKC')] : undefined);
     if (id != null) return { tag: Number(id), name };
     unresolved.push(`条件:${name}`);
     return { name };
@@ -197,8 +203,23 @@ export function parseCharacterPage(html, id) {
   const ab = scriptJSON(html, 'ab') || {};
   const tr = scriptJSON(html, 'tr') || {};
   const eq = scriptJSON(html, 'eq') || [];
+  const ac = scriptJSON(html, 'ac') || {};
   const d = data && data[String(id)];
   if (!d) throw new Error('script#data にキャラ情報がありません');
+
+  // 所持アーツ（デッキ構成の提案に使う）。script#ac: id → [名前, 説明, 種別コード, アイコン群]
+  // 種別は名前の接頭辞（打撃/射撃/必殺/特殊/究極/覚醒）から取り、コードも参考として保存する
+  const arts = (d.ac || []).map((aid) => {
+    const entry = ac[String(aid)];
+    const name = entry ? entry[0] : '';
+    const typeMatch = String(name).match(/^(打撃|射撃|必殺|特殊|究極|覚醒)/);
+    return {
+      id: aid,
+      name,
+      type: typeMatch ? typeMatch[1] : '不明',
+      type_code: entry && typeof entry[2] === 'number' ? entry[2] : null,
+    };
+  });
 
   const tagNameToId = {};
   for (const [tid, arr] of Object.entries(tr)) tagNameToId[arr[0]] = Number(tid);
@@ -232,6 +253,7 @@ export function parseCharacterPage(html, id) {
     deploy_z_ability: abilityTexts((d.ab || {}).llz), // 出撃ZアビリティI〜IV
     zenkai_ability: abilityTexts((d.ab || {}).p),   // ZENKAI系（無ければ空）
     equip_ids: eq.map((e) => Number(e[0])).filter(Number.isFinite),
+    arts,
   };
 }
 
@@ -337,6 +359,54 @@ export function parseEquipList(html) {
   return [...new Set([...html.matchAll(/href="\/equip\/(\d+)"/g)].map((m) => Number(m[1])))].sort((a, b) => a - b);
 }
 
+// ---------------------------------------------------------------- 装備の効果条件（マージ時の再解析）
+
+/**
+ * スロット内の raw 行列から「効果条件付き効果」を解析する（DESIGN.md §11-7）。
+ * 表示上の折り返しで複数行に分かれているため、行を結合してから解析する。形式:
+ *   バトルメンバーに[自身以外の]「属性：RED」または「タグ：GT」が[N人[以上]]いると、
+ *   自身の打撃攻撃力を5.00% ~ 10.00%アップ
+ *
+ * 条件のスコープは「バトルメンバー」（スタンダード=バトル3体 / プラウド=そのチーム3体）。
+ * 「N人いると」は「N人以上」と解釈する（実機未検証の仮定 — §11-7）。
+ *
+ * @returns {Array|null} 解析できた場合は新しい lines 配列、できなければ null
+ */
+export function parseConditionalSlot(rawLines, tagNameToId) {
+  const joined = rawLines.join('');
+  const m = joined.match(
+    /^(?:バトルメンバーに)?(自身以外の)?((?:「[^」]+」(?:または|かつ)?)+)が(?:(\d+)人(?:以上)?)?いると[、]?(.+)$/
+  );
+  if (!m) return null;
+  const unresolved = [];
+  const cond = parseInlineConditions(m[2], tagNameToId, unresolved);
+  if (cond.length === 0) return null;
+  const condMeta = {
+    cond,
+    cond_count: m[3] ? Number(m[3]) : 1,
+    cond_exclude_self: !!m[1],
+    cond_scope: 'battle',
+    cond_raw: joined.slice(0, joined.length - m[4].length),
+  };
+  // 効果部: 「自身の<名前>を/が <値>%[ ~ <値>%]アップ」の連続
+  const lines = [];
+  const effRe = /(?:自身の)?([^、。]+?)[をが]\s*([+-]?[\d.]+)\s*[%％](?:\s*[~〜～]\s*\+?(-?[\d.]+)\s*[%％])?アップ/g;
+  let em;
+  let matchedLen = 0;
+  while ((em = effRe.exec(m[4])) !== null) {
+    const line = { text: em[1].trim(), ...condMeta };
+    if (em[3] != null) { line.value = Number(em[3]); line.value_min = Number(em[2]); }
+    else { line.value = Number(em[2]); }
+    for (const u of unresolved) line.cond_unresolved = (line.cond_unresolved || []).concat(u);
+    lines.push(line);
+    matchedLen += em[0].length;
+  }
+  if (lines.length === 0) return null;
+  // 効果部に解析できない残りが多い場合は諦めて raw のまま（アビリティ文の混在を防ぐ）
+  if (matchedLen < m[4].length * 0.5) return null;
+  return lines;
+}
+
 // ---------------------------------------------------------------- マージ
 
 const STATS = ['hp', 'strike_atk', 'blast_atk', 'strike_def', 'blast_def', 'critical', 'ki_recovery'];
@@ -376,6 +446,9 @@ async function merge() {
   }
   const reparse = (list) => (list || []).map((a) => ({ ...a, groups: parseAbilityText(a.text, tagNameToId) }));
 
+  // 属性タグ（タッグキャラは2属性を持ちうる。両属性とも色限定効果の対象になる）
+  const ELEMENT_TAG = { 15000: 'RED', 15001: 'YEL', 15002: 'PUR', 15003: 'GRN', 15004: 'BLU', 15070: 'LGT', 15072: 'DRK' };
+
   const charactersOut = {};
   for (const meta of listMeta.chars) {
     const detail = chars[String(meta.id)];
@@ -384,11 +457,17 @@ async function merge() {
       detail.deploy_z_ability = reparse(detail.deploy_z_ability);
       detail.zenkai_ability = reparse(detail.zenkai_ability);
     }
+    const tagsOf = detail?.tags?.length ? detail.tags : meta.tags;
+    const elements = [
+      meta.element,
+      ...tagsOf.map((t) => ELEMENT_TAG[t]).filter((e) => e && e !== meta.element),
+    ].filter(Boolean);
     charactersOut[String(meta.id)] = {
       id: meta.id,
       card_no: detail?.card_no || meta.card_no,
       name: detail?.name || meta.name,
       element: meta.element,
+      elements,
       rarity: meta.rarity,
       zenkai: meta.zenkai,
       lf: meta.lf || detail?.ll || false,
@@ -400,11 +479,25 @@ async function merge() {
       deploy_z_ability: detail?.deploy_z_ability || [],
       zenkai_ability: detail?.zenkai_ability || [],
       equip_ids: detail?.equip_ids || [],
+      arts: detail?.arts || [],
     };
   }
 
   const fragmentsOut = {};
-  for (const [id, e] of Object.entries(equips)) fragmentsOut[id] = e;
+  for (const [id, e] of Object.entries(equips)) {
+    // 効果条件付きスロット（raw行のみのスロット）を再解析する
+    for (const slot of e.slots || []) {
+      const lines = slot.lines || [];
+      if (lines.length > 0 && lines.every((l) => l.raw != null)) {
+        const parsed = parseConditionalSlot(lines.map((l) => l.raw), tagNameToId);
+        if (parsed) slot.lines = parsed;
+      }
+    }
+    // 力の大会専用フラグメント（通常バトルでは装備不可）。
+    // サイトに構造化マーカーが無いため名前の接頭辞で判定し、データ側にフラグを持たせる
+    if (String(e.name || '').startsWith('【力の大会】')) e.top = true;
+    fragmentsOut[id] = e;
+  }
 
   // 効果行レポート（effect_map 整備用）
   const freq = {};

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   canEquip, statBase, autoAbilityLevel, memberAbilityGroups, abilityCorrections,
+  partyAbilityCorrections, zRelationCounts, isTournamentOnly,
   bestForCharacter, optimizeParty, characterDetail,
 } from '../js/optimizer.js';
 
@@ -88,11 +89,11 @@ const zAbility = (values) => values.map((v, i) => ({
 test('memberAbilityGroups: 星でZアビレベルを自動選択し、my.z_level で上書きできる', () => {
   const character = charaV2(1, [7], {}, { z_ability: zAbility([22, 26, 30, 38]) });
   const auto7 = memberAbilityGroups({ character, my: myOf(3, { stars: 7 }), effectMap });
-  assert.equal(auto7.party[0].effects[0].value, 38, '★7 → IV');
+  assert.equal(auto7.z[0].effects[0].value, 38, '★7 → IV');
   const auto3 = memberAbilityGroups({ character, my: myOf(3, { stars: 3 }), effectMap });
-  assert.equal(auto3.party[0].effects[0].value, 26, '★3 → II');
+  assert.equal(auto3.z[0].effects[0].value, 26, '★3 → II');
   const forced = memberAbilityGroups({ character, my: myOf(3, { stars: 7, z_level: 1 }), effectMap });
-  assert.equal(forced.party[0].effects[0].value, 22, 'z_level=1 で上書き');
+  assert.equal(forced.z[0].effects[0].value, 22, 'z_level=1 で上書き');
 });
 
 test('abilityCorrections v2: Zアビは6体全員、出撃Zアビは発生源も対象もバトル3体のみ', () => {
@@ -182,19 +183,147 @@ test('bestForCharacter: SLOT4(★7解放)は星が足りないと評価に入ら
   assert.ok(Math.abs(r3a.score - r3b.score) < 1e-12, '★3ではSLOT4が無効なので同スコア');
 });
 
-test('同一フラグメントの重複装備は既定で不可、allowDuplicates で可（実機未確認の仮定）', () => {
+test('同一フラグメントは同じキャラに重複装備できない（実機仕様）', () => {
   const member = { character: charaV1(1, []), my: myOf(2) };
   const fragments = { 10: frag(10, [{ stat: 'strike_atk', base: true, value: 10 }]) };
   const r1 = bestForCharacter({
     member, fragmentsById: fragments, counts: { 10: 2 },
     weights: { strike_atk: 1 }, effectMap,
   });
-  assert.deepEqual(r1.ids, ['10']);
-  const r2 = bestForCharacter({
-    member, fragmentsById: fragments, counts: { 10: 2 },
-    weights: { strike_atk: 1 }, effectMap, allowDuplicates: true,
+  assert.deepEqual(r1.ids, ['10'], '所持2枚でも同キャラには1枚だけ');
+});
+
+test('別のキャラ同士なら同じフラグメントを同時装備できる（所持数の範囲で）', () => {
+  const A = { character: charaV1(1, []), my: myOf(1) };
+  const B = { character: charaV1(2, []), my: myOf(1) };
+  const fragments = { 10: frag(10, [{ stat: 'strike_atk', base: true, value: 50 }]) };
+  // 所持2枚 → 両方に装備できる
+  const r2 = optimizeParty({
+    members: [A, B], battleIds: [1, 2],
+    fragmentsById: fragments, counts: { 10: 2 },
+    weights: { strike_atk: 1 }, effectMap,
   });
-  assert.deepEqual(r2.ids, ['10', '10']);
+  assert.deepEqual(r2.assignments['1'].ids, ['10']);
+  assert.deepEqual(r2.assignments['2'].ids, ['10']);
+  // 所持1枚 → どちらか片方だけ（奪い合い）
+  const r1 = optimizeParty({
+    members: [A, B], battleIds: [1, 2],
+    fragmentsById: fragments, counts: { 10: 1 },
+    weights: { strike_atk: 1 }, effectMap,
+  });
+  const equipped = [r1.assignments['1'].ids.length, r1.assignments['2'].ids.length];
+  assert.deepEqual(equipped.sort(), [0, 1], '1枚なら1体だけが装備');
+});
+
+test('力の大会専用フラグメントは通常の最適化候補から除外される', () => {
+  const member = { character: charaV1(1, []), my: myOf(1) };
+  const fragments = {
+    10: { ...frag(10, [{ stat: 'strike_atk', base: true, value: 100 }]), top: true, name: '【力の大会】強いやつ' },
+    11: frag(11, [{ stat: 'strike_atk', base: true, value: 10 }]),
+  };
+  assert.equal(isTournamentOnly(fragments[10]), true);
+  const r = bestForCharacter({
+    member, fragmentsById: fragments, counts: { 10: 1, 11: 1 },
+    weights: { strike_atk: 1 }, effectMap,
+  });
+  assert.deepEqual(r.ids, ['11'], '数値が高くても力の大会フラグは選ばれない');
+  const r2 = bestForCharacter({
+    member, fragmentsById: fragments, counts: { 10: 1, 11: 1 },
+    weights: { strike_atk: 1 }, effectMap, includeTournament: true,
+  });
+  assert.deepEqual(r2.ids, ['10'], 'includeTournament なら候補に入る');
+});
+
+test('効果条件付き効果: パーティ編成が条件を満たすときだけ計算に入る', () => {
+  const condFrag = {
+    id: 20, name: '条件付き', equip_char_ids: [1],
+    slots: [{ label: 'SLOT 1', star7: false, lines: [
+      { text: '基礎打撃攻撃力', value: 30 },
+      { text: '打撃攻撃力', value: 20, cond: [[{ tag: 26 }]], cond_count: 2, cond_exclude_self: false, cond_scope: 'battle', cond_raw: '「タグ：未来」が2人いると、' },
+    ] }],
+  };
+  const member = { character: charaV2(1, [26]), my: myOf(1) };
+  const fragments = { 20: condFrag };
+  const base = { member, fragmentsById: fragments, counts: { 20: 1 }, weights: { strike_atk: 1 }, effectMap };
+  // 文脈なし → 条件効果は入らない（基礎30のみ）
+  const rNo = bestForCharacter(base);
+  assert.deepEqual(rNo.ids, ['20']);
+  // 未来2体の文脈 → 条件効果込みでスコアが上がる
+  const ctx2 = { selfId: 1, members: [{ id: 1, tags: [26], element: 'PUR' }, { id: 2, tags: [26], element: 'RED' }] };
+  const rYes = bestForCharacter({ ...base, context: ctx2 });
+  assert.ok(rYes.score > rNo.score, `条件成立でスコア増: ${rYes.score} > ${rNo.score}`);
+  // characterDetail でも同様（conditionalOff に記録される）
+  const dNo = characterDetail({ member, fragmentList: [condFrag], effectMap });
+  assert.equal(dNo.conditionalOff.length, 1);
+  assert.ok(Math.abs(dNo.stats.strike_atk.fragTotal - 30) < 1e-9, '未成立: 基礎30のみ');
+  const dYes = characterDetail({ member, fragmentList: [condFrag], effectMap, context: ctx2 });
+  assert.equal(dYes.conditionalOff.length, 0);
+  assert.ok(dYes.stats.strike_atk.final > dNo.stats.strike_atk.final);
+});
+
+test('効果条件: 自身以外の（cond_exclude_self）は自分を数えない', () => {
+  const line = { text: '打撃攻撃力', value: 10, cond: [[{ tag: 25 }]], cond_count: 1, cond_exclude_self: true };
+  const fragX = { id: 21, name: 'X', equip_char_ids: [1], slots: [{ label: 'SLOT 1', star7: false, lines: [line] }] };
+  const member = { character: charaV2(1, [25]), my: myOf(1) };
+  const selfOnly = { selfId: 1, members: [{ id: 1, tags: [25], element: 'PUR' }] };
+  const withOther = { selfId: 1, members: [{ id: 1, tags: [25], element: 'PUR' }, { id: 2, tags: [25], element: 'RED' }] };
+  const d1 = characterDetail({ member, fragmentList: [fragX], effectMap, context: selfOnly });
+  assert.equal(d1.conditionalOff.length, 1, '自分しかいない → 未成立');
+  const d2 = characterDetail({ member, fragmentList: [fragX], effectMap, context: withOther });
+  assert.equal(d2.conditionalOff.length, 0, '他に人造人間がいる → 成立');
+});
+
+test('リーダー特殊ルール: リーダーはタグ無視でZアビを送受する（Zのみ・選出時のみ）', () => {
+  // A(リーダー, タグ7): Zアビ「タグ7の基礎打撃+30」/ B(タグ8): Zアビ「タグ8の基礎打撃+20」
+  const A = { character: charaV2(1, [7], {}, { z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag: 7 }]], effects: [{ text: '基礎打撃攻撃力', value: 30 }], unresolved: [], raw: '' }] }] }), my: myOf() };
+  const B = { character: charaV2(2, [8], {}, { z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag: 8 }]], effects: [{ text: '基礎打撃攻撃力', value: 20 }], unresolved: [], raw: '' }] }] }), my: myOf() };
+  // リーダーなし: タグ不一致なので相互に乗らない
+  const plain = abilityCorrections([A, B], [1, 2], effectMap);
+  assert.equal(plain['1'].z.strike_atk, 30, 'A自身の30のみ');
+  assert.equal(plain['2'].z.strike_atk, 20, 'B自身の20のみ');
+  // Aをリーダーに: Aは Bの20 をタグ無視で受け、Aの30 はBにタグ無視で乗る
+  const led = abilityCorrections([A, B], [1, 2], effectMap, { leaderId: 1 });
+  assert.equal(led['1'].z.strike_atk, 50, 'リーダーは他キャラのZアビを全て受ける');
+  assert.equal(led['2'].z.strike_atk, 50, 'リーダーのZアビは選出キャラ全員に乗る');
+  // リーダーが選出（バトルメンバー）でなければ発動しない
+  const bench = abilityCorrections([A, B], [2], effectMap, { leaderId: 1 });
+  assert.equal(bench['2'].z.strike_atk, 20, '非選出リーダーは特殊ルールなし');
+});
+
+test('リーダー特殊ルール: ZENKAIアビリティは対象外', () => {
+  const A = { character: charaV2(1, [7], {}, { zenkai_ability: [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag: 7 }]], effects: [{ text: '基礎打撃攻撃力', value: 25 }], unresolved: [], raw: '' }] }] }), my: myOf() };
+  const B = { character: charaV2(2, [8]), my: myOf() };
+  const led = abilityCorrections([A, B], [1, 2], effectMap, { leaderId: 1 });
+  assert.equal(led['2'].zenkai.strike_atk, 0, 'ZENKAIアビはタグ無視で配られない');
+  assert.equal(led['1'].zenkai.strike_atk, 25, '自身には通常条件で乗る');
+});
+
+test('partyAbilityCorrections: プラウドはチーム内で完結する（チーム跨ぎの補正なし）', () => {
+  const mk = (id, tags, z) => ({
+    character: charaV2(id, tags, {}, { z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [], effects: [{ text: '基礎打撃攻撃力', value: z }], unresolved: [], raw: '' }] }] }),
+    my: myOf(),
+  });
+  const members = [mk(1, [7], 10), mk(2, [7], 10), mk(3, [7], 10), mk(4, [7], 40), mk(5, [7], 40), mk(6, [7], 40)];
+  const ext = partyAbilityCorrections({
+    members, battleIds: [1, 2, 3, 4, 5, 6],
+    teams: [[1, 2, 3], [4, 5, 6]], effectMap,
+  });
+  assert.equal(ext['1'].z.strike_atk, 30, 'チーム1: 10×3体のみ');
+  assert.equal(ext['4'].z.strike_atk, 120, 'チーム2: 40×3体のみ');
+});
+
+test('zRelationCounts: 条件に一致する(発生源×種別)を数える。出撃Zは数えない', () => {
+  const A = { character: charaV2(1, [7], {}, {
+    z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag: 7 }]], effects: [{ text: '基礎打撃攻撃力', value: 30 }], unresolved: [], raw: '' }] }],
+    zenkai_ability: [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag: 7 }]], effects: [{ text: '基礎打撃攻撃力', value: 20 }], unresolved: [], raw: '' }] }],
+    deploy_z_ability: [{ id: 0, name: '出撃ZアビリティI', groups: [{ cond: [], effects: [{ text: '基礎打撃攻撃力', value: 3 }], unresolved: [], raw: '' }] }],
+  }), my: myOf() };
+  const B = { character: charaV2(2, [7], {}, { z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag: 8 }]], effects: [{ text: '基礎打撃攻撃力', value: 20 }], unresolved: [], raw: '' }] }] }), my: myOf() };
+  const rel = zRelationCounts([A, B], effectMap);
+  // A(タグ7): AのZ(タグ7)◯ + AのZENKAI(タグ7)◯ + BのZ(タグ8)× = 2（出撃Zは数えない）
+  assert.equal(rel['1'], 2);
+  // B(タグ7): AのZ◯ + AのZENKAI◯ = 2
+  assert.equal(rel['2'], 2);
 });
 
 test('未知の効果を持つフラグメントは計算から除外しつつ unknown で報告する', () => {

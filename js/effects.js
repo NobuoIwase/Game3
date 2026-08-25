@@ -129,19 +129,41 @@ export function resolveEffect(entry, effectMap) {
 }
 
 /**
+ * 効果条件（「バトルメンバーに「タグ：X」がN人いると〜」）の判定。
+ * @param {object} line 条件付き効果行（cond / cond_count / cond_exclude_self を持つ）
+ * @param {object|null} context { selfId, members: [{id, tags, element}] }
+ *   members はスコープ内のバトルメンバー（スタンダード=バトル3体 / プラウド=そのチーム3体）。
+ *   context が無い場合（パーティ文脈の外での計算）は条件不成立として扱う。
+ * @returns {boolean}
+ */
+export function fragmentConditionSatisfied(line, context) {
+  if (!line.cond) return true;
+  if (!context || !Array.isArray(context.members)) return false;
+  let n = 0;
+  for (const m of context.members) {
+    if (line.cond_exclude_self && String(m.id) === String(context.selfId)) continue;
+    if (conditionMatches(line.cond, m)) n++;
+  }
+  return n >= (line.cond_count || 1);
+}
+
+/**
  * フラグメント1個のステータス効果を解決する。
  * 対応形式:
- *   v2: { slots: [{label, star7, lines:[{text,value}|{raw}]}] } … 取り込みデータ。
+ *   v2: { slots: [{label, star7, lines:[{text,value[,cond]}|{raw}]}] } … 取り込みデータ。
  *       star7 スロットは stars>=7 のときだけ有効。raw 行（アビリティ文）は計算対象外。
+ *       cond 付きの行は context（パーティ編成）で条件を満たすときだけ有効。
  *   v1: { effects: [{stat,base,value}|{text,value}] }           … 手入力・旧データ
- * @param {object} opts { stars: 装備キャラの限界突破数（既定 7 = 全スロット有効） }
- * @returns {{effects:Array<{stat,base,value}>, unknown:Array, others:Array<string>}}
+ * @param {object} opts { stars: 装備キャラの限界突破数（既定 7）, context: 効果条件の判定文脈 }
+ * @returns {{effects:Array, unknown:Array, others:Array<string>, conditionalOff:Array}}
+ *   conditionalOff … 条件を満たしていない（または文脈が無い）ため適用しなかった条件付き効果
  */
 export function fragmentStatEffects(fragment, effectMap, opts = {}) {
   const stars = opts.stars ?? 7;
   const effects = [];
   const unknown = [];
   const others = [];
+  const conditionalOff = [];
   const push = (entry) => {
     const r = resolveEffect(entry, effectMap);
     if (r.ok) {
@@ -161,13 +183,17 @@ export function fragmentStatEffects(fragment, effectMap, opts = {}) {
       if (slot.star7 && stars < 7) continue;
       for (const line of slot.lines || []) {
         if (line.raw != null) continue; // アビリティ文（%値を持たない行）は計算対象外
+        if (line.cond && !fragmentConditionSatisfied(line, opts.context)) {
+          conditionalOff.push({ text: line.text, value: line.value, cond_raw: line.cond_raw });
+          continue;
+        }
         push(line);
       }
     }
   } else {
     for (const entry of fragment.effects || []) push(entry);
   }
-  return { effects, unknown, others };
+  return { effects, unknown, others, conditionalOff };
 }
 
 /**
@@ -221,14 +247,17 @@ export function resolveAbilityGroups(groups, effectMap, sourceName = '') {
 /**
  * アビリティ条件（OR のリスト、各要素は AND トークン列）がキャラに一致するか。
  * token: {tag:<id>} | {element:"RED"} | {name:<未解決>}（未解決トークンは一致しない）
+ * タッグキャラは2属性を持ちうる（elements 配列）。どちらの属性でも色限定効果が乗る。
  */
 export function conditionMatches(cond, character) {
   if (!cond || cond.length === 0) return true;
   const tags = character.tags || [];
-  const element = (character.element || '').toUpperCase();
+  const elements = (character.elements && character.elements.length
+    ? character.elements
+    : [character.element]).filter(Boolean).map((e) => String(e).toUpperCase());
   return cond.some((andTokens) => andTokens.every((tok) => {
     if (tok.tag != null) return tags.includes(tok.tag);
-    if (tok.element) return element === tok.element;
+    if (tok.element) return elements.includes(tok.element);
     return false; // 未解決トークン
   }));
 }

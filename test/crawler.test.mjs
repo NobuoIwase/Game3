@@ -55,3 +55,33 @@ test('parseAbilityText: 未解決の条件名は unresolved に記録される�
   assert.deepEqual(g[0].cond, [[{ name: '謎の新タグ' }]]);
   assert.ok(g[0].unresolved.includes('条件:謎の新タグ'));
 });
+
+test('parseConditionalSlot: 折り返された効果条件ブロックを解析する', async () => {
+  const { parseConditionalSlot } = await import('../tools/crawl_dblegends.mjs');
+  const TAGS2 = { '人造人間': 25, 'RED': 15000, 'BLU': 15004, 'GT': 32 };
+  const r1 = parseConditionalSlot([
+    'バトルメンバーに「属性：RED」または',
+    '「タグ：GT」がいると、',
+    '自身の打撃攻撃力が6.00% ~ 12.50%アップ',
+  ], TAGS2);
+  assert.equal(r1.length, 1);
+  assert.deepEqual(r1[0].cond, [[{ tag: 15000, name: 'RED' }], [{ tag: 32, name: 'GT' }]]);
+  assert.equal(r1[0].value, 12.5);
+  assert.equal(r1[0].value_min, 6);
+  assert.equal(r1[0].text, '打撃攻撃力');
+
+  const r2 = parseConditionalSlot([
+    'バトルメンバーに自身以外の',
+    '「タグ：人造人間」がいると、',
+    '自身の打撃攻撃力を8.00% ~ 15.00%アップ',
+  ], TAGS2);
+  assert.equal(r2[0].cond_exclude_self, true);
+
+  // アビリティ文（発動系）は解析しない
+  const r3 = parseConditionalSlot([
+    '場に出た時、自身以外のバトルメンバーに',
+    '「タグ：GT」が1人以上編成時、以下の効果を発動する',
+    '・敵全体に待機カウント3付与',
+  ], TAGS2);
+  assert.equal(r3, null);
+});

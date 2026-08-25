@@ -1,12 +1,16 @@
-// フラグメント割当の最適化（DESIGN.md §4）
+// フラグメント割当の最適化（DESIGN.md §4 / §11-7）
+//
+// 装備ルール（実機仕様）:
+//   - 同一フラグメントを同じキャラに重複装備することはできない
+//   - 別のキャラ同士なら同じフラグメントを同時に装備できる（奪い合いは存在しない）
+//   → キャラ間の結合が無いため、キャラごとに独立して厳密最適化できる。
 //
 // 構成:
-//   - memberAbilityGroups … キャラのZ/ZENKAI/出撃Zアビリティを解決して補正グループにする
-//   - abilityCorrections  … パーティ全体のアビリティ補正合算（編成が決まれば定数 — §4-3）
-//   - bestForCharacter    … キャラ1体に対する最適な N 枚の選出（v1）
-//   - optimizeParty       … 所持数の奪い合いを含む全体最適化（v2）。
-//                           貪欲法で初期解を作り、分枝限定法で厳密解を探索する。
-//                           探索が打ち切られた場合は結果に exact:false を立てる。
+//   - memberAbilityGroups      … キャラのZ/ZENKAI/出撃Zアビリティを解決して補正グループにする
+//   - abilityCorrections       … 1パーティ分のアビリティ補正合算（編成が決まれば定数）
+//   - partyAbilityCorrections  … スタンダード（6体1パーティ）/プラウド（3体×2チーム）の振り分け
+//   - bestForCharacter         … キャラ1体に対する最適な N 枚の選出
+//   - optimizeParty            … 対象キャラ全員をそれぞれ独立に厳密最適化
 //
 // スコアは「重み付き相対値」: Σ weight[stat] × (❸ / フラグメント無しの❸)。
 // 固定の「基礎あり優先/基礎なし優先」ルールは実装しない（§2-5）。必ず ❸ を評価して比較する。
@@ -70,16 +74,15 @@ function manualToGroups(list) {
 
 /**
  * キャラ1体の有効なアビリティ補正グループを解決する。
- * @returns {{party:Array, deploy:Array, unknown:Array<string>}}
- *   party  … パーティ6体全員に乗る（Zアビ＋ZENKAIアビ）
- *   deploy … 発生源がバトルメンバーのときだけ、バトル3体に乗る（出撃Zアビ / LLアビ — §2-2）
+ * @returns {{z:Array, zenkai:Array, deploy:Array, unknown:Array<string>}}
+ *   z      … Zアビリティ。パーティ全員に乗る（リーダー特殊ルールの対象）
+ *   zenkai … ZENKAIアビリティ。パーティ全員に乗る
+ *   deploy … 出撃Zアビ / LLアビ。発生源がバトルメンバーのときだけバトルメンバーに乗る（§2-2）
  */
 export function memberAbilityGroups({ character, my, effectMap }) {
   const name = character.name || character.id;
   const stars = my?.stars ?? 0;
   const unknown = [];
-  const party = [];
-  const deploy = [];
 
   const resolve = (abilityEntry, label) => {
     if (!abilityEntry) return [];
@@ -88,31 +91,55 @@ export function memberAbilityGroups({ character, my, effectMap }) {
     return r.groups.filter((g) => g.effects.length > 0);
   };
 
-  party.push(...resolve(pickAbilityLevel(character.z_ability, my?.z_level, stars), 'Zアビリティ'));
-  if (character.zenkai_ability?.length && (my?.zenkai_level !== 0)) {
-    party.push(...resolve(pickAbilityLevel(character.zenkai_ability, my?.zenkai_level, stars), 'ZENKAIアビリティ'));
-  }
-  deploy.push(...resolve(pickAbilityLevel(character.deploy_z_ability, my?.deploy_z_level, stars), '出撃Zアビリティ'));
+  const z = resolve(pickAbilityLevel(character.z_ability, my?.z_level, stars), 'Zアビリティ');
+  const zenkai = (character.zenkai_ability?.length && my?.zenkai_level !== 0)
+    ? resolve(pickAbilityLevel(character.zenkai_ability, my?.zenkai_level, stars), 'ZENKAIアビリティ')
+    : [];
+  const deploy = resolve(pickAbilityLevel(character.deploy_z_ability, my?.deploy_z_level, stars), '出撃Zアビリティ');
 
   // 手入力の追加分（§1-1: 手入力でのオーバーライド経路）
-  party.push(...manualToGroups(my?.z_ability));
-  party.push(...manualToGroups(my?.zenkai_ability));
+  z.push(...manualToGroups(my?.z_ability));
+  zenkai.push(...manualToGroups(my?.zenkai_ability));
   deploy.push(...manualToGroups(my?.ll_ability));
 
-  return { party, deploy, unknown };
+  return { z, zenkai, deploy, unknown };
 }
 
 /**
- * パーティのアビリティ補正を合算する（§2-2 / §4-3）。
- * - Zアビ / ZENKAIアビ … パーティ6体全員 → 全員に乗る
- * - 出撃Zアビ / LLアビ … 発生源がバトルメンバーのときのみ、バトル3体に乗る
- *   （文言「自身がバトルメンバー時」に基づく。§10-2 参照）
+ * Z/ZENKAIアビリティの「関係数」（ゲームの◎×N表示に相当）。
+ * 対象キャラごとに、条件に一致する（発生源キャラ × 種別 z/zenkai）の組を数える。
+ * 出撃Zアビリティは数えない（実機の表示仕様）。リーダー特殊ルールも数えない。
+ * @returns {Object<string, number>} キャラID → 関係数
+ */
+export function zRelationCounts(members, effectMap) {
+  const resolved = members.map((m) => ({ m, ab: memberAbilityGroups({ ...m, effectMap }) }));
+  const out = {};
+  for (const target of members) {
+    const tid = String(target.character.id);
+    let n = 0;
+    for (const { ab } of resolved) {
+      for (const kind of ['z', 'zenkai']) {
+        if ((ab[kind] || []).some((g) => g.effects.length > 0 && conditionMatches(g.cond, target.character))) n++;
+      }
+    }
+    out[tid] = n;
+  }
+  return out;
+}
+
+/**
+ * パーティのアビリティ補正を合算する（§2-2 / §4-3 / §11-7）。
+ * - Zアビ / ZENKAIアビ … パーティ全員 → 条件に一致する全員に乗る
+ * - 出撃Zアビ / LLアビ … 発生源がバトルメンバーのときのみ、バトルメンバーに乗る
+ * - リーダー特殊ルール（opts.leaderId、選出=バトルメンバー時に限り）:
+ *     1. リーダーは他の全キャラのZアビリティを「タグを無視して」受ける
+ *     2. リーダーのZアビリティは他の選出キャラに「タグを無視して」乗る
+ *   ※対象はZアビリティのみ（ZENKAI・出撃Zは対象外 — 実機未検証の仮定は§11-7参照）
  * - 基礎なし(base:false)の補正は §2-3 の式に存在しない未検証項目のため extNonBase に分離して警告
  *
  * @returns {Object<string, {z, zenkai, ll, extNonBase, warnings, unknown}>} キャラID → 補正
- *   （z にZ+ZENKAI合算、ll に出撃Z/LL合算を入れる。zenkai は常に0 — 表示互換のため残す）
  */
-export function abilityCorrections(members, battleIds, effectMap) {
+export function abilityCorrections(members, battleIds, effectMap, opts = {}) {
   const battleSet = new Set((battleIds || []).map(String));
   const zero = () => Object.fromEntries(STATS.map((s) => [s, 0]));
   const out = {};
@@ -120,6 +147,20 @@ export function abilityCorrections(members, battleIds, effectMap) {
     out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), warnings: [], unknown: [] };
   }
   const resolved = members.map((m) => ({ m, ab: memberAbilityGroups({ ...m, effectMap }) }));
+
+  const applyEffectsTo = (effects, tid, bucket, srcMember) => {
+    for (const e of effects) {
+      if (e.base === false) {
+        out[tid].extNonBase[e.stat] += e.value;
+        out[tid].warnings.push(
+          `${srcMember.character.name || srcMember.character.id} のアビリティ「基礎なし ${e.stat} +${e.value}%」は検証済みの計算式に無い形式のため、基礎なし補正として乗算しています（実機で要確認）`
+        );
+      } else {
+        out[tid][bucket][e.stat] += e.value;
+      }
+    }
+  };
+
   for (const { m, ab } of resolved) {
     const srcId = String(m.character.id);
     for (const u of ab.unknown) out[srcId].unknown.push(u);
@@ -129,23 +170,73 @@ export function abilityCorrections(members, battleIds, effectMap) {
           const tid = String(target.character.id);
           if (targetsBattleOnly && !battleSet.has(tid)) continue;
           if (!conditionMatches(g.cond, target.character)) continue;
-          for (const e of g.effects) {
-            if (e.base === false) {
-              out[tid].extNonBase[e.stat] += e.value;
-              out[tid].warnings.push(
-                `${m.character.name || srcId} のアビリティ「基礎なし ${e.stat} +${e.value}%」は検証済みの計算式に無い形式のため、基礎なし補正として乗算しています（実機で要確認）`
-              );
-            } else {
-              out[tid][bucket][e.stat] += e.value;
-            }
-          }
+          applyEffectsTo(g.effects, tid, bucket, m);
         }
       }
     };
-    apply(ab.party, 'z', false);
+    apply(ab.z, 'z', false);
+    apply(ab.zenkai, 'zenkai', false);
     if (battleSet.has(srcId)) apply(ab.deploy, 'll', true);
   }
+
+  // リーダー特殊ルール（選出時に限り）
+  const leaderId = opts.leaderId != null && opts.leaderId !== '' ? String(opts.leaderId) : null;
+  if (leaderId && battleSet.has(leaderId) && out[leaderId]) {
+    const leader = members.find((m) => String(m.character.id) === leaderId);
+    for (const { m, ab } of resolved) {
+      const srcId = String(m.character.id);
+      if (srcId === leaderId) {
+        // リーダーのZアビを、条件に一致しない選出キャラにもタグ無視で付与
+        for (const g of ab.z) {
+          for (const target of members) {
+            const tid = String(target.character.id);
+            if (tid === leaderId || !battleSet.has(tid)) continue;
+            if (conditionMatches(g.cond, target.character)) continue; // 通常適用済み
+            applyEffectsTo(g.effects, tid, 'z', m);
+          }
+        }
+      } else if (leader) {
+        // リーダーは他キャラのZアビを、条件に一致しなくてもタグ無視で受ける
+        for (const g of ab.z) {
+          if (conditionMatches(g.cond, leader.character)) continue; // 通常適用済み
+          applyEffectsTo(g.effects, leaderId, 'z', m);
+        }
+      }
+    }
+  }
   return out;
+}
+
+/**
+ * バトル形式に応じたアビリティ補正の振り分け。
+ * - スタンダード: パーティ6体（バトル3体＋ゼンカイ枠3体）を1つのパーティとして合算。
+ *   Zアビ/ZENKAIアビは6体全員から、出撃Zアビはバトル3体から（§2-2 / §11-3）
+ * - プラウド（teams 指定時）: 各チーム3体を独立したパーティとして合算する。
+ *   チームをまたいだ補正は乗らない（1戦ごとに場にいるのはそのチームの3体だけのため）。
+ *   チーム全員がバトルメンバー扱い（出撃Zアビも3体全員が発生源・対象）。
+ *
+ * @param {object} p {members, battleIds, teams?, effectMap, leaderId?, leaders?}
+ *   teams   … プラウド時: キャラIDの配列の配列（例 [[1,2,3],[4,5,6]]）
+ *   leaderId … スタンダード時のリーダー（省略可）
+ *   leaders  … プラウド時のチーム別リーダー（teams と同じ並び。省略時は各チーム先頭）
+ */
+export function partyAbilityCorrections({ members, battleIds, teams, effectMap, leaderId, leaders }) {
+  if (Array.isArray(teams) && teams.length > 0) {
+    const zero = () => Object.fromEntries(STATS.map((s) => [s, 0]));
+    const out = {};
+    for (const m of members) {
+      out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), warnings: [], unknown: [] };
+    }
+    teams.forEach((teamIds, i) => {
+      const idSet = new Set(teamIds.map(String));
+      const teamMembers = members.filter((m) => idSet.has(String(m.character.id)));
+      if (teamMembers.length === 0) return;
+      const teamLeader = (leaders && leaders[i] != null) ? leaders[i] : teamIds[0];
+      Object.assign(out, abilityCorrections(teamMembers, teamIds, effectMap, { leaderId: teamLeader }));
+    });
+    return out;
+  }
+  return abilityCorrections(members, battleIds, effectMap, { leaderId });
 }
 
 // ---------------------------------------------------------------- ステータス基礎値
@@ -211,12 +302,18 @@ function scoreOf(ctx, fragBase, fragNonBase) {
   return score;
 }
 
-function prepareItems(candidates, counts, effectMap, weightedStats, stars, allWarnings) {
+/** 力の大会専用フラグメントか（通常バトルでは装備不可 — §11-7） */
+export function isTournamentOnly(fragment) {
+  return fragment.top === true;
+}
+
+function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings) {
   const items = [];
   for (const frag of candidates) {
+    if (isTournamentOnly(frag) && !includeTournament) continue;
     const count = counts[String(frag.id)] || 0;
     if (count <= 0) continue;
-    const { effects, unknown } = fragmentStatEffects(frag, effectMap, { stars });
+    const { effects, unknown } = fragmentStatEffects(frag, effectMap, { stars, context });
     allWarnings.unknown.push(...unknown);
     const base = new Float64Array(weightedStats.length);
     const nonBase = new Float64Array(weightedStats.length);
@@ -233,7 +330,41 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, allWa
   return items;
 }
 
-function enumerateCombos(items, slots, ctx, allowDuplicates, maxCombos) {
+/**
+ * 最良の1組合せだけを直接探索する（組合せリストを保持しない）。
+ * 奪い合いが起こりえない場合（全候補の所持数 >= 対象キャラ数）はこれで厳密解になる。
+ */
+function enumerateBest(items, slots, ctx) {
+  const nStats = ctx.stats.length;
+  const fragBase = new Float64Array(nStats);
+  const fragNonBase = new Float64Array(nStats);
+  const chosen = [];
+  let best = { ids: [], score: scoreOf(ctx, fragBase, fragNonBase) };
+  const dfs = (idx, remaining) => {
+    const score = scoreOf(ctx, fragBase, fragNonBase);
+    if (score > best.score) best = { ids: chosen.slice(), score };
+    if (remaining === 0) return;
+    for (let i = idx; i < items.length; i++) {
+      const item = items[i];
+      for (let j = 0; j < nStats; j++) {
+        fragBase[j] += item.base[j];
+        fragNonBase[j] += item.nonBase[j];
+      }
+      chosen.push(item.id);
+      dfs(i + 1, remaining - 1);
+      chosen.pop();
+      for (let j = 0; j < nStats; j++) {
+        fragBase[j] -= item.base[j];
+        fragNonBase[j] -= item.nonBase[j];
+      }
+    }
+  };
+  dfs(0, Math.max(0, slots));
+  return best;
+}
+
+// 同一フラグメントは同じキャラに重複装備できない（実機仕様）ため、各アイテムは1回まで
+function enumerateCombos(items, slots, ctx, maxCombos) {
   const combos = [];
   const nStats = ctx.stats.length;
   const fragBase = new Float64Array(nStats);
@@ -247,21 +378,16 @@ function enumerateCombos(items, slots, ctx, allowDuplicates, maxCombos) {
     if (remaining === 0) return;
     for (let i = idx; i < items.length; i++) {
       const item = items[i];
-      const maxK = Math.min(remaining, allowDuplicates ? item.count : 1);
-      for (let k = 1; k <= maxK; k++) {
-        for (let j = 0; j < nStats; j++) {
-          fragBase[j] += item.base[j];
-          fragNonBase[j] += item.nonBase[j];
-        }
-        chosen.push(item.id);
-        dfs(i + 1, remaining - k);
+      for (let j = 0; j < nStats; j++) {
+        fragBase[j] += item.base[j];
+        fragNonBase[j] += item.nonBase[j];
       }
-      for (let k = 1; k <= maxK; k++) {
-        chosen.pop();
-        for (let j = 0; j < nStats; j++) {
-          fragBase[j] -= item.base[j];
-          fragNonBase[j] -= item.nonBase[j];
-        }
+      chosen.push(item.id);
+      dfs(i + 1, remaining - 1);
+      chosen.pop();
+      for (let j = 0; j < nStats; j++) {
+        fragBase[j] -= item.base[j];
+        fragNonBase[j] -= item.nonBase[j];
       }
     }
   };
@@ -291,10 +417,9 @@ export function bestForCharacter(p) {
   }
   const candidates = equippableFragments(p.member.character, p.fragmentsById);
   const stars = p.member.my?.stars ?? 7;
-  const items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, warnings);
+  const items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings);
   const slots = Number(p.member.my && p.member.my.equip_slots) || 3;
-  const { combos } = enumerateCombos(items, slots, ctx, p.allowDuplicates === true, 0);
-  const best = combos[0] || { ids: [], score: 0 };
+  const best = enumerateBest(items, slots, ctx);
   return { ids: best.ids, score: best.score, warnings: warnings.messages, unknown: warnings.unknown };
 }
 
@@ -306,7 +431,10 @@ export function optimizeParty(p) {
     return { assignments: {}, totalScore: 0, exact: true, ext: {}, warnings: ['評価するステータスの重みがすべて 0 です'], unknown: [] };
   }
   const weights = Object.fromEntries(weightedStats.map((s) => [s, p.weights[s]]));
-  const ext = abilityCorrections(p.members, p.battleIds, p.effectMap);
+  const ext = partyAbilityCorrections({
+    members: p.members, battleIds: p.battleIds, teams: p.teams,
+    effectMap: p.effectMap, leaderId: p.leaderId, leaders: p.leaders,
+  });
   for (const id of Object.keys(ext)) {
     warnings.messages.push(...ext[id].warnings);
     warnings.unknown.push(...(ext[id].unknown || []).map((u) => ({ fragmentId: '', fragmentName: 'アビリティ', reason: u, raw: null })));
@@ -322,26 +450,52 @@ export function optimizeParty(p) {
   const maxCombos = p.maxCombosPerChar ?? 20000;
   let exact = true;
 
-  const perChar = [];
-  for (const member of targets) {
+  // 各キャラの候補を準備
+  const prepared = targets.map((member) => {
     const cid = String(member.character.id);
     const ctx = makeScoreContext(member, ext[cid], weights, weightedStats, warnings);
-    if (!ctx) {
-      perChar.push({ cid, member, combos: [{ ids: [], score: 0 }] });
-      continue;
-    }
+    if (!ctx) return { cid, member, ctx: null, items: [], slots: 0 };
     const candidates = equippableFragments(member.character, p.fragmentsById);
     const stars = member.my?.stars ?? 7;
-    const items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, warnings);
+    const context = p.contexts ? p.contexts[cid] : undefined;
+    const items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, context, p.includeTournament === true, warnings);
     const slots = Number(member.my && member.my.equip_slots) || 3;
-    const { combos, truncated } = enumerateCombos(items, slots, ctx, p.allowDuplicates === true, maxCombos);
+    return { cid, member, ctx, items, slots };
+  });
+
+  // 奪い合いの有無を判定: あるフラグメントを使い得るキャラ数が所持数を超えるものがあるか。
+  // 超えるものが無ければキャラごとに独立で厳密解が出せる（既定の所持数6ではこちらになる）
+  const usableBy = {};
+  for (const pc of prepared) {
+    for (const item of pc.items) usableBy[item.id] = (usableBy[item.id] || 0) + 1;
+  }
+  const contended = Object.entries(usableBy).some(([fid, n]) => n > (Number(p.counts[fid]) || 0));
+  if (!contended) {
+    const assignments = {};
+    let totalScore = 0;
+    for (const pc of prepared) {
+      const best = pc.ctx ? enumerateBest(pc.items, pc.slots, pc.ctx) : { ids: [], score: 0 };
+      assignments[pc.cid] = { ids: best.ids, score: best.score };
+      totalScore += best.score;
+    }
+    return { assignments, totalScore, exact: true, ext, warnings: warnings.messages, unknown: warnings.unknown };
+  }
+
+  // 奪い合いあり（所持数を減らしている場合）→ 組合せ列挙＋分枝限定法
+  const perChar = [];
+  for (const pc of prepared) {
+    if (!pc.ctx) {
+      perChar.push({ cid: pc.cid, member: pc.member, combos: [{ ids: [], score: 0 }] });
+      continue;
+    }
+    const { combos, truncated } = enumerateCombos(pc.items, pc.slots, pc.ctx, maxCombos);
     if (truncated) {
       exact = false;
       warnings.messages.push(
-        `${member.character.name || cid} の装備組合せが多すぎるため上位 ${maxCombos} 通りに絞りました（厳密解でない可能性があります）`
+        `${pc.member.character.name || pc.cid} の装備組合せが多すぎるため上位 ${maxCombos} 通りに絞りました（厳密解でない可能性があります）`
       );
     }
-    perChar.push({ cid, member, combos });
+    perChar.push({ cid: pc.cid, member: pc.member, combos });
   }
 
   perChar.sort((a, b) => (b.combos[0]?.score || 0) - (a.combos[0]?.score || 0));
@@ -418,17 +572,19 @@ export function optimizeParty(p) {
 
 /**
  * 表示用: キャラ1体 × 装備フラグメント一覧から、各ステータスの ❶〜❻ を計算する。
- * @returns {{stats:Object<string,object>, unknown:Array}}
+ * @returns {{stats:Object<string,object>, unknown:Array, conditionalOff:Array}}
  */
-export function characterDetail({ member, ext, fragmentList, effectMap }) {
+export function characterDetail({ member, ext, fragmentList, effectMap, context }) {
   const e = ext || { z: {}, zenkai: {}, ll: {}, extNonBase: {} };
   const stars = member.my?.stars ?? 7;
   const unknown = [];
+  const conditionalOff = [];
   const basePct = Object.fromEntries(STATS.map((s) => [s, 0]));
   const nonBasePct = Object.fromEntries(STATS.map((s) => [s, 0]));
   for (const frag of fragmentList) {
-    const r = fragmentStatEffects(frag, effectMap, { stars });
+    const r = fragmentStatEffects(frag, effectMap, { stars, context });
     unknown.push(...r.unknown);
+    conditionalOff.push(...r.conditionalOff.map((c) => ({ ...c, fragmentName: frag.name })));
     for (const ef of r.effects) {
       if (ef.base) basePct[ef.stat] += ef.value;
       else nonBasePct[ef.stat] += ef.value;
@@ -448,5 +604,5 @@ export function characterDetail({ member, ext, fragmentList, effectMap }) {
       extNonBase: e.extNonBase ? (e.extNonBase[s] || 0) : 0,
     });
   }
-  return { stats, unknown };
+  return { stats, unknown, conditionalOff };
 }

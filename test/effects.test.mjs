@@ -122,3 +122,12 @@ test('conditionMatches: OR条件・属性AND条件・未解決トークン', () 
   // 条件なしは全員一致
   assert.equal(conditionMatches([], goku), true);
 });
+
+test('タッグキャラの2属性: どちらの属性でも色限定条件に一致する', () => {
+  const dual = { tags: [25], element: 'BLU', elements: ['BLU', 'GRN'] };
+  assert.equal(conditionMatches([[{ element: 'BLU' }]], dual), true);
+  assert.equal(conditionMatches([[{ element: 'GRN' }]], dual), true, '第2属性でも一致');
+  assert.equal(conditionMatches([[{ element: 'RED' }]], dual), false);
+  const single = { tags: [], element: 'PUR' };
+  assert.equal(conditionMatches([[{ element: 'PUR' }]], single), true, 'elements 無しでも従来通り');
+});
