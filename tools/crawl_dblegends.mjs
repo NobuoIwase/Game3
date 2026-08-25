@@ -143,6 +143,13 @@ export function parseAbilityText(text, tagNameToId) {
     if (lines.length === 0) continue;
     const g = { cond: [], unresolved: [], effects: [], raw: block };
     for (const line of lines) {
+      // 「(バトル時、)「属性：X」かつ「タグ：Y」の以下のステータスをアップ」
+      // = ブロック全体の対象条件。後続の箇条書き効果すべてに掛かる
+      const header = line.match(/^(?:バトル時、)?((?:「[^」]+」(?:かつ|または)?)+)の以下のステータスを.*アップ/);
+      if (header) {
+        for (const tokens of parseInlineConditions(header[1], tagNameToId, g.unresolved)) g.cond.push(tokens);
+        continue;
+      }
       if (isConditionLine(line)) {
         for (const orPart of line.split(/\s+or\s+/)) {
           const andTokens = [];
@@ -194,6 +201,28 @@ export function parseAbilityText(text, tagNameToId) {
       g.unresolved.push(body);
     }
     if (g.effects.length > 0 || g.cond.length > 0 || g.unresolved.length > 0) groups.push(g);
+  }
+  // 【対象キャラクター】ブロック: 条件だけを列挙する形式。
+  //   ・「属性：PUR」かつ「タグ：孫一族」 … 各行が AND 節
+  //   または                             … 行間の「または」が OR
+  // この条件を、同一アビリティ内の無条件の効果グループすべてに適用する。
+  const targetIdx = groups.findIndex((g) => g.raw.includes('【対象キャラクター】'));
+  if (targetIdx >= 0) {
+    const tg = groups[targetIdx];
+    const cond = [];
+    const unresolved = [];
+    for (const line of tg.raw.split(/\r?\n/)) {
+      const t = line.trim().replace(/^・\s*/, '');
+      if (!t || t === 'または' || t.startsWith('【')) continue;
+      for (const tokens of parseInlineConditions(t, tagNameToId, unresolved)) cond.push(tokens);
+    }
+    if (cond.length) {
+      groups.splice(targetIdx, 1);
+      for (const g of groups) {
+        if (g.cond.length === 0 && g.effects.length > 0) g.cond = cond;
+      }
+      if (unresolved.length) groups.push({ cond: [], unresolved, effects: [], raw: tg.raw });
+    }
   }
   return groups;
 }
@@ -254,6 +283,22 @@ export function parseCharacterPage(html, id) {
     z_ability: abilityTexts((d.ab || {}).z),        // ZアビリティI〜IV
     deploy_z_ability: abilityTexts((d.ab || {}).llz), // 出撃ZアビリティI〜IV
     zenkai_ability: abilityTexts((d.ab || {}).p),   // ZENKAI系（無ければ空）
+    // ULTRAアビリティ（レアリティULTRAのみ）。d.ab.u: [[?,?,アビリティID,?],...]
+    // 効果は与ダメージ等の戦闘効果でステータス式(❸)には乗らないため、
+    // 原文と参照タグ（リーダー/同タグ編成判断の表示用）のみ保存する
+    ultra_ability: ((d.ab || {}).u || [])
+      .map((entry) => (Array.isArray(entry) ? entry[2] : entry))
+      .filter((aid) => aid != null && aid !== -1 && ab[String(aid)])
+      .map((aid) => {
+        const [name, atext] = ab[String(aid)];
+        const refTags = [];
+        for (const m of String(atext).matchAll(/「(?:タグ|エピソード|キャラクター)：([^」]+)」/g)) {
+          const nm = m[1].trim();
+          const tid = tagNameToId[nm] ?? tagNameToId[nm.normalize('NFKC')];
+          if (!refTags.some((r) => r.name === nm)) refTags.push({ name: nm, tag: tid != null ? Number(tid) : null });
+        }
+        return { id: aid, name, text: atext, ref_tags: refTags };
+      }),
     equip_ids: eq.map((e) => Number(e[0])).filter(Number.isFinite),
     arts,
   };
@@ -489,6 +534,14 @@ async function merge() {
       z_ability: detail?.z_ability || [],
       deploy_z_ability: detail?.deploy_z_ability || [],
       zenkai_ability: detail?.zenkai_ability || [],
+      ultra_ability: (detail?.ultra_ability || []).map((u) => ({
+        ...u,
+        // 参照タグはグローバルなタグ表で解決し直す（ページ単体で未解決だった名前の救済）
+        ref_tags: (u.ref_tags || []).map((r) => ({
+          ...r,
+          tag: r.tag ?? tagNameToId[r.name] ?? tagNameToId[String(r.name).normalize('NFKC')] ?? null,
+        })),
+      })),
       equip_ids: detail?.equip_ids || [],
       arts: detail?.arts || [],
     };

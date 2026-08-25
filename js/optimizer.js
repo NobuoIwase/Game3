@@ -241,6 +241,50 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
   return abilityCorrections(members, battleIds, effectMap, { leaderId });
 }
 
+/**
+ * ゼンカイ枠（スタンダード下段3枠）の自動選出。
+ * 各候補を「バトル3体の重み付き補正増分」で採点し、増分が正の上位3体を返す。
+ * アビリティ補正はキャラごとの独立な加算なので、候補同士に相互作用は無く、
+ * 上位3体を選べば3枠合計も最大になる（厳密）。
+ * リーダーの「他キャラのZアビをタグ無視で受ける」特殊ルールも採点に含まれる。
+ * 補正+1%の価値は ≈ 0.01×❶ で近似する（フラグメント配分が未確定の段階のため）。
+ *
+ * @param {object} p {battleMembers, candidates, weights, effectMap, leaderId?}
+ *   battleMembers … バトル出撃3体（{character, my}）
+ *   candidates    … 候補キャラ（{character, my}。所持キャラからパーティ外を渡す想定）
+ * @returns {Array<{id, delta}>} 採点降順・最大3体
+ */
+export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsById, effectMap, leaderId }) {
+  if (!battleMembers || battleMembers.length === 0) return [];
+  const bIds = battleMembers.map((m) => m.character.id);
+  const score = (ext) => {
+    let t = 0;
+    for (const m of battleMembers) {
+      const e = ext[String(m.character.id)];
+      if (!e) continue;
+      const wm = (weightsById && weightsById[String(m.character.id)]) || weights;
+      for (const s of STATS) {
+        const w = wm[s] || 0;
+        if (!w) continue;
+        const sb = statBase(m.character, m.my, s);
+        if (!sb || sb.base <= 0) continue;
+        const corr = (e.z[s] || 0) + (e.zenkai[s] || 0) + (e.ll[s] || 0);
+        t += w * corr * sb.base * 0.01;
+      }
+    }
+    return t;
+  };
+  const baseline = score(abilityCorrections(battleMembers, bIds, effectMap, { leaderId }));
+  const scored = [];
+  for (const c of candidates) {
+    const ext = abilityCorrections([...battleMembers, c], bIds, effectMap, { leaderId });
+    const delta = score(ext) - baseline;
+    if (delta > 1e-9) scored.push({ id: c.character.id, delta });
+  }
+  scored.sort((a, b) => b.delta - a.delta);
+  return scored.slice(0, 3);
+}
+
 // ---------------------------------------------------------------- ステータス基礎値
 
 /**
@@ -473,7 +517,10 @@ export function optimizeParty(p) {
   if (weightedStats.length === 0) {
     return { assignments: {}, totalScore: 0, exact: true, ext: {}, warnings: ['評価するステータスの重みがすべて 0 です'], unknown: [] };
   }
-  const weights = Object.fromEntries(weightedStats.map((s) => [s, p.weights[s]]));
+  // タイプ別特化（p.weightsById）: キャラごとに重みを上書きできる。
+  // 未指定のキャラは p.weights を使う。奪い合いの裁定はスコア合算で行われるため、
+  // 重みは同じスケール（主軸=1.0 程度）で渡すこと
+  const weightsAllFor = (cid) => (p.weightsById && p.weightsById[cid]) || p.weights;
   const ext = partyAbilityCorrections({
     members: p.members, battleIds: p.battleIds, teams: p.teams,
     effectMap: p.effectMap, leaderId: p.leaderId, leaders: p.leaders,
@@ -498,14 +545,17 @@ export function optimizeParty(p) {
   // p.itemsCache により再利用できる（キャッシュは同一の重み・文脈で使うこと）
   const prepared = targets.map((member) => {
     const cid = String(member.character.id);
-    const ctx = makeScoreContext(member, ext[cid], weights, weightedStats, warnings);
+    const wAll = weightsAllFor(cid);
+    const wStats = STATS.filter((s) => (wAll[s] || 0) > 0);
+    const w = Object.fromEntries(wStats.map((s) => [s, wAll[s]]));
+    const ctx = wStats.length ? makeScoreContext(member, ext[cid], w, wStats, warnings) : null;
     if (!ctx) return { cid, member, ctx: null, items: [], slots: 0 };
     let items = p.itemsCache && p.itemsCache[cid];
     if (!items) {
       const candidates = equippableFragments(member.character, p.fragmentsById);
       const stars = member.my?.stars ?? 7;
       const context = p.contexts ? p.contexts[cid] : undefined;
-      items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, context, p.includeTournament === true, warnings);
+      items = prepareItems(candidates, p.counts, p.effectMap, wStats, stars, context, p.includeTournament === true, warnings);
       if (p.itemsCache) p.itemsCache[cid] = items;
     }
     const slots = Number(member.my && member.my.equip_slots) || 3;

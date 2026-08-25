@@ -150,3 +150,20 @@ test('人数比例の効果条件: 該当メンバー数×効果値で適用さ�
   const r3 = fragmentStatEffects(frag, effectMap, { context: mk(3) });
   assert.equal(r3.effects[0].value, 15, '3人 → 5%×3');
 });
+
+test('resolveAbilityGroups: 条件行が未解析のグループは無条件適用しない（原則1-4）', async () => {
+  const { resolveAbilityGroups, conditionMatches } = await import('../js/effects.js');
+  const groups = [{
+    cond: [],
+    unresolved: ['バトル時、「属性：GRN」かつ「タグ：未知タグ」の以下のステータスをアップ'],
+    effects: [{ text: '基礎打撃攻撃力', value: 35 }],
+    raw: '',
+  }];
+  const map = { entries: { '基礎打撃攻撃力': { stat: 'strike_atk', base: true } } };
+  const r = resolveAbilityGroups(groups, map, 'テストキャラ');
+  // 効果は解決されるが、条件未解析なので「絶対に一致しない条件」が付く
+  assert.equal(r.groups[0].effects.length, 1);
+  assert.ok(r.groups[0].cond.length > 0, '条件が付与される');
+  assert.equal(conditionMatches(r.groups[0].cond, { tags: [15003, 31], element: 'GRN' }), false);
+  assert.ok(r.unknown.some((u) => u.includes('条件行が未解析')), '警告が出る');
+});

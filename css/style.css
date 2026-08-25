@@ -431,3 +431,26 @@ hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 .item-list .item .grow { flex: 1; min-width: 0; }
 .item-title { font-size: 13px; font-weight: 800; }
 .item-desc { font-size: 11px; color: var(--muted); word-break: break-word; }
+
+/* 覚醒フラグメント: ゲーム同様に豪華な二重枠＋四隅飾りで通常フラグと区別する */
+.frag-awakened {
+  border-width: 3px;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 214, .8), 0 0 7px rgba(232, 160, 60, .5);
+}
+.frag-awakened::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2;
+  background:
+    linear-gradient(135deg, rgba(255, 236, 170, .95) 0 7px, transparent 7px) top left / 14px 14px no-repeat,
+    linear-gradient(225deg, rgba(255, 236, 170, .95) 0 7px, transparent 7px) top right / 14px 14px no-repeat,
+    linear-gradient(45deg, rgba(255, 236, 170, .95) 0 7px, transparent 7px) bottom left / 14px 14px no-repeat,
+    linear-gradient(315deg, rgba(255, 236, 170, .95) 0 7px, transparent 7px) bottom right / 14px 14px no-repeat;
+}
+.frag-slot.frag-awakened, .frag-tile.frag-awakened { position: relative; }
+
+/* ULTRAアビリティ表示 */
+.ultra-badge {
+  display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 900; color: #fff;
+  background: linear-gradient(135deg, #d8322a, #8c1a14); clip-path: polygon(6% 0, 100% 0, 94% 100%, 0 100%);
+}
+.ultra-cond-ok { color: var(--ok); font-weight: 700; }
+.ultra-cond-ng { color: var(--warn); }

@@ -255,7 +255,18 @@ export function resolveAbilityGroups(groups, effectMap, sourceName = '') {
       if (/基礎.*[\d.]+\s*[%％]/.test(u)) unknown.push(`${sourceName}: 未解析の行「${u}」`);
       if (u.startsWith('条件:')) unknown.push(`${sourceName}: 未解決の${u}`);
     }
-    out.push({ cond: g.cond || [], effects, raw: g.raw });
+    // フェイルセーフ（原則1-4）: 効果があるのに条件らしき行が未解析のままのグループは、
+    // 「無条件＝全員に適用」と誤解釈せず、絶対に一致しない条件を付けて警告する。
+    const CONDLIKE = /「(?:タグ|属性|エピソード|レアリティ|キャラクター|バトルスタイル)[:：]|【対象キャラクター】/;
+    let cond = g.cond || [];
+    if (effects.length > 0 && cond.length === 0) {
+      const suspect = (g.unresolved || []).find((u) => CONDLIKE.test(u));
+      if (suspect) {
+        unknown.push(`${sourceName}: 条件行が未解析のため適用しません「${suspect}」`);
+        cond = [[{ name: '未解析条件' }]];
+      }
+    }
+    out.push({ cond, effects, raw: g.raw });
   }
   return { groups: out, unknown };
 }

@@ -7,6 +7,7 @@ import { sumFragmentEffects, fragmentStatEffects, lookupEffectName, conditionMat
 import {
   optimizeParty, partyAbilityCorrections, canEquip, characterDetail,
   statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
+  pickZenkaiMembers, bestForCharacter,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -22,8 +23,10 @@ const ui = {
   displayStat: 'strike_atk',
   opt: {
     targets: 'battle', mode: 'single', stat: 'strike_atk',
-    preset: 'attack', weights: Object.fromEntries(STATS.map((s) => [s, 0])),
+    preset: 'strike_total', weights: Object.fromEntries(STATS.map((s) => [s, 0])),
     optimizeLeader: true,
+    autoZenkai: true, // 最適化時にゼンカイ枠（下段3枠）を所持キャラから自動選出する
+    styleSplit: true, // 打撃/射撃タイプのキャラは自分のタイプに合わせた重みで組む
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
   fragFilter: { q: '', rarity: '', ownedOnly: false },
@@ -160,9 +163,12 @@ function charFilterControls(f, onChange) {
       Object.values(state.game.tags).sort().map((n) => el('option', { value: n }))));
 }
 const PRESETS = {
-  attack: { label: '攻撃特化', weights: { strike_atk: 1, blast_atk: 1 } },
+  strike_pure: { label: '完全打撃特化', weights: { strike_atk: 1 } },
+  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, hp: 0.5, strike_def: 0.35, blast_def: 0.35, blast_atk: 0.15, critical: 0.1, ki_recovery: 0.05 } },
+  balance: { label: '総合バランス', weights: { hp: 0.6, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.5, blast_def: 0.5, critical: 0.2, ki_recovery: 0.1 } },
+  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, hp: 0.5, strike_def: 0.35, blast_def: 0.35, strike_atk: 0.15, critical: 0.1, ki_recovery: 0.05 } },
+  blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
   defense: { label: '耐久特化', weights: { hp: 1, strike_def: 0.7, blast_def: 0.7 } },
-  balance: { label: 'バランス', weights: { hp: 0.6, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.5, blast_def: 0.5, critical: 0.2, ki_recovery: 0.1 } },
 };
 
 // バトルスタイル → 長所を伸ばす最適化目標（提案機能）。
@@ -254,6 +260,8 @@ async function persistOverridesAndReload() {
 
 function charDef(id) { return state.game.characters[String(id)]; }
 function fragDef(id) { return state.game.fragments[String(id)]; }
+/** 覚醒フラグメント判定（rarity コードが awakened〜。ゲーム内では豪華枠で区別される） */
+function isAwakenedFrag(f) { return String(f?.rarity || '').startsWith('awakened'); }
 function charMy(id) { return state.my.characters[String(id)]; }
 function isOwned(id) { return !!charMy(id); }
 const zeroStats = () => Object.fromEntries(STATS.map((s) => [s, 0]));
@@ -301,9 +309,9 @@ function proudTeams() {
   ];
 }
 
-/** 編成の署名（提案カードの陳腐化検出に使う） */
+/** 編成＋最適化目標の署名（提案カードの陳腐化検出に使う。重み変更でも失効させる） */
 function partySig() {
-  return JSON.stringify([ui.party.mode, ...ui.party.memberIds]);
+  return JSON.stringify([ui.party.mode, ...ui.party.memberIds, currentWeights()]);
 }
 /**
  * 効果条件（「バトルメンバーに〜がいると」）の判定文脈をキャラごとに作る。
@@ -450,7 +458,7 @@ function fragTile(f, opts = {}) {
   const count = fragCount(f.id);
   const used = assignedCount(f.id, opts.exclude);
   return el('div', {
-    class: `frag-tile fr-${f.rarity || 'default'}${count > 0 ? '' : ' not-owned'}${opts.disabled ? ' disabled' : ''}`,
+    class: `frag-tile fr-${f.rarity || 'default'}${isAwakenedFrag(f) ? ' frag-awakened' : ''}${count > 0 ? '' : ' not-owned'}${opts.disabled ? ' disabled' : ''}`,
     onclick: opts.onclick,
     title: f.name,
   },
@@ -543,7 +551,9 @@ function renderParty() {
     return el('div', { class: `member-card el-${m.character.element}${ui._flashCards ? ' flash' : ''}` },
       el('div', { class: 'portrait', onclick: () => openCharSheet(cid) }, lazyImg(m.character.image, m.character.name)),
       el('div', { class: 'm-body' },
-        el('div', { class: 'm-name' }, m.character.name, memberBadge(cid)),
+        el('div', { class: 'm-name' }, m.character.name,
+          (m.character.ultra_ability || []).length ? el('span', { class: 'ultra-badge', style: 'margin-left:4px' }, 'ULTRA') : null,
+          memberBadge(cid)),
         el('div', { class: 'm-sub', style: 'display:flex;align-items:center;gap:6px' },
           m.character.card_no,
           el('span', {}, starsSelectCompact(cid, m.my)),
@@ -552,8 +562,9 @@ function renderParty() {
           equips.map((fid, idx) => {
             const f = fid ? fragDef(fid) : null;
             return el('div', {
-              class: `frag-slot${f ? ` fr-${f.rarity || 'default'}` : ''}`,
-              onclick: () => openFragPicker(cid, idx),
+              class: `frag-slot${f ? ` fr-${f.rarity || 'default'}` : ''}${isAwakenedFrag(f) ? ' frag-awakened' : ''}`,
+              // 装備済みはタップで詳細（条件達成状況つき）、空きスロットはピッカーを開く
+              onclick: () => (f ? openFragSheet(String(fid), { cid, slotIdx: idx }) : openFragPicker(cid, idx)),
             }, f ? lazyImg(f.icon, f.name) : '＋');
           })),
         st
@@ -657,6 +668,18 @@ function renderOptimizerPanel() {
         type: 'checkbox', checked: m.optimizeLeader !== false,
         onchange: (e) => { m.optimizeLeader = e.target.checked; },
       }), 'リーダー枠も最適化する（Zアビ特殊ルールを考慮して入替え）'),
+    ui.party.mode !== 'proud'
+      ? el('label', { class: 'check' },
+          el('input', {
+            type: 'checkbox', checked: m.autoZenkai !== false,
+            onchange: (e) => { m.autoZenkai = e.target.checked; },
+          }), 'ゼンカイ枠も自動選出する（所持キャラからバトル3体への恩恵最大の3体。手動で選びたい場合はオフ）')
+      : null,
+    el('label', { class: 'check' },
+      el('input', {
+        type: 'checkbox', checked: m.styleSplit !== false,
+        onchange: (e) => { m.styleSplit = e.target.checked; },
+      }), 'キャラのタイプに合わせて特化（射撃特化パでも打撃タイプは打撃で組む。逆転時は通知）'),
     el('button', { class: 'btn', onclick: runOptimize }, '最適化を実行'),
     el('p', { class: 'small-note' },
       '同一フラグメントは同じキャラに重複装備できません（別キャラは所持数の範囲で同時装備可）。' +
@@ -666,7 +689,8 @@ function renderOptimizerPanel() {
 function currentWeights() {
   const m = ui.opt;
   if (m.mode === 'single') return { [m.stat]: 1 };
-  if (m.mode === 'preset') return { ...PRESETS[m.preset].weights };
+  // 保存データに旧プリセット名（attack 等）が残っていても落ちないようフォールバック
+  if (m.mode === 'preset') return { ...(PRESETS[m.preset] || PRESETS.balance).weights };
   return { ...m.weights };
 }
 
@@ -701,6 +725,7 @@ function computeStyleSuggestion(members, baseParams, best, mainResult) {
   const sugResult = optimizeParty({
     ...baseParams,
     weights: sugWeights,
+    weightsById: undefined, // 提案はパーティ全体を提案目標で組む（タイプ別の上書きはしない）
     leaderId: ui.party.mode === 'proud' ? undefined : best.leaders[0],
     leaders: ui.party.mode === 'proud' ? best.leaders : undefined,
   });
@@ -901,10 +926,37 @@ async function runOptimize() {
   // リーダー最適化: リーダー枠のZアビ特殊ルールで総合スコアが最も高くなるリーダーを探索する
   const teams = proudTeams();
   const contexts = battleContexts(members);
+
+  // タイプ別特化（styleSplit）: 攻撃の主軸がある目標のとき、主軸と逆のタイプのキャラは
+  // 打撃/射撃の重みを入れ替えて組む（例: 射撃特化パの打撃タイプは打撃で組む）
+  const swapAtkWeights = (w) => ({ ...w, strike_atk: w.blast_atk || 0, blast_atk: w.strike_atk || 0 });
+  const focusOf = (w) => ((w.strike_atk || 0) > (w.blast_atk || 0) ? 'strike'
+    : (w.blast_atk || 0) > (w.strike_atk || 0) ? 'blast' : null);
+  const baseFocus = focusOf(weights);
+  const weightsById = {};
+  const styleSwapped = []; // {cid, ownStat, partyStat}
+  if (ui.opt.styleSplit !== false && baseFocus) {
+    for (const m of members) {
+      const tags = m.character.tags || [];
+      const swap = (baseFocus === 'blast' && tags.includes(13002)) // 打撃タイプ
+        || (baseFocus === 'strike' && tags.includes(13003));       // 射撃タイプ
+      if (swap) {
+        const cid = String(m.character.id);
+        weightsById[cid] = swapAtkWeights(weights);
+        styleSwapped.push({
+          cid,
+          ownStat: baseFocus === 'blast' ? 'strike_atk' : 'blast_atk',
+          partyStat: baseFocus === 'blast' ? 'blast_atk' : 'strike_atk',
+        });
+      }
+    }
+  }
+
   const baseParams = {
     members, battleIds: bIds, teams, contexts,
     fragmentsById: state.game.fragments, counts,
     weights, effectMap: state.game.effectMap,
+    weightsById: Object.keys(weightsById).length ? weightsById : undefined,
     targets: proud ? 'all' : ui.opt.targets,
   };
   const currentLeaders = proud
@@ -927,36 +979,62 @@ async function runOptimize() {
   // リーダー候補の比較は「重み付きの最終ステ絶対値の合計」で行う。
   // optimizeParty の totalScore は補正込みの ❸/❸₀ 相対値で、❸₀ 自体がリーダーに依存して
   // 変わるため、リーダー間の比較には使えない（補正の大きいリーダーほど相対値が縮む）。
-  const absScoreOf = (r) => {
+  const absScoreOf = (r, mem, ctx) => {
     let total = 0;
     for (const [cid, asg] of Object.entries(r.assignments)) {
-      const m = members.find((x) => String(x.character.id) === cid);
+      const m = mem.find((x) => String(x.character.id) === cid);
       if (!m) continue;
       const d = characterDetail({
         member: m, ext: r.ext[cid],
         fragmentList: asg.ids.map(fragDef).filter(Boolean),
-        effectMap: state.game.effectMap, context: contexts[cid],
+        effectMap: state.game.effectMap, context: ctx[cid],
       });
-      for (const [s, w] of Object.entries(weights)) {
+      const wm = weightsById[cid] || weights;
+      for (const [s, w] of Object.entries(wm)) {
         if (w > 0 && d.stats[s]) total += w * d.stats[s].final;
       }
     }
     return total;
   };
 
+  // ゼンカイ枠の自動選出（スタンダードのみ）: 所持キャラからバトル3体への恩恵最大の3体。
+  // リーダーの「Zアビをタグ無視で受ける」特殊ルールが採点に効くため、リーダー候補ごとに選び直す
+  const battleSet = new Set(bIds.map(String));
+  const battleMembersOnly = members.filter((m) => battleSet.has(String(m.character.id)));
+  const autoZenkai = !proud && ui.opt.autoZenkai !== false && battleMembersOnly.length > 0;
+  const toMember = (cid) => {
+    const def = charDef(cid);
+    return def ? { character: def, my: charMy(cid) || defaultCharMy(def) } : null;
+  };
+  const zenkaiCandidates = autoZenkai
+    ? Object.keys(state.my.characters || {}).filter((cid) => !battleSet.has(String(cid))).map(toMember).filter(Boolean)
+    : [];
+
   const computingMsg = showMsg('info', '最適化を計算中…');
   const itemsCache = {}; // フラグメント寄与はリーダー非依存なので候補間で再利用する
-  let best = null;
+  const leaderResults = [];
   try {
     for (const combo of leaderCombos) {
+      let mem = members;
+      let ctx = contexts;
+      let zPick = null;
+      if (autoZenkai) {
+        zPick = pickZenkaiMembers({
+          battleMembers: battleMembersOnly, candidates: zenkaiCandidates,
+          weights, weightsById, effectMap: state.game.effectMap, leaderId: combo[0],
+        });
+        mem = [...battleMembersOnly, ...zPick.map((z) => toMember(String(z.id))).filter(Boolean)];
+        ctx = battleContexts(mem);
+      }
       const r = optimizeParty({
         ...baseParams,
+        members: mem, contexts: ctx,
         itemsCache,
         leaderId: proud ? undefined : combo[0],
         leaders: proud ? combo : undefined,
       });
-      const abs = absScoreOf(r);
-      if (!best || abs > best.abs) best = { result: r, leaders: combo, abs };
+      const abs = absScoreOf(r, mem, ctx);
+      leaderResults.push({ result: r, leaders: combo, abs, zenkai: zPick, mem, ctx });
       if (r.contended && leaderCombos.length > 1) {
         // 所持数を絞って奪い合いがある場合は探索が重いため、現在の配置のみで実行する
         showMsg('info', '所持数を絞っているため、リーダー探索は現在のリーダー配置のみで実行しました。');
@@ -967,7 +1045,35 @@ async function runOptimize() {
   } finally {
     computingMsg.remove();
   }
+  let best = leaderResults.reduce((a, b) => (b.abs > a.abs ? b : a));
+  // ULTRA優先タイブレーク（スタンダードのみ）: ❸合計が最良の 0.5% 以内なら、
+  // ULTRAアビリティ（与ダメ等・❸に乗らない）が発動するULTRAキャラのリーダーを優先する
+  let ultraLeaderNote = '';
+  if (!proud && !(charDef(best.leaders[0])?.ultra_ability || []).length) {
+    const ultraCand = leaderResults
+      .filter((x) => (charDef(x.leaders[0])?.ultra_ability || []).length && x.abs >= best.abs * 0.995)
+      .sort((a, b) => b.abs - a.abs)[0];
+    if (ultraCand) {
+      const loss = best.abs > 0 ? ((1 - ultraCand.abs / best.abs) * 100) : 0;
+      ultraLeaderNote = `\nリーダーはULTRAの ${charDef(ultraCand.leaders[0])?.name} を優先しました` +
+        `（重み付き合計 -${fmt(loss, 2)}% 以内。ULTRAアビリティはリーダー時に発動し❸には現れないため優先）。`;
+      best = ultraCand;
+    }
+  }
   const result = best.result;
+
+  // ゼンカイ枠の反映（最適化のたびに選び直す）
+  let zenkaiMsg = '';
+  if (autoZenkai && best.zenkai) {
+    const zIds = best.zenkai.map((z) => String(z.id));
+    for (let i = 0; i < 3; i++) ui.party.memberIds[3 + i] = zIds[i] || '';
+    if (zIds.length) {
+      zenkaiMsg = `\nゼンカイ枠を自動選出しました: ${zIds.map((id) => charDef(id)?.name || id).join(' / ')}` +
+        (zIds.length < 3 ? `（バトル3体に恩恵のある所持キャラが ${zIds.length} 体でした）` : '');
+    } else {
+      zenkaiMsg = '\nゼンカイ枠: バトル3体にアビリティ恩恵のある所持キャラが見つかりませんでした（キャラタブで所持登録すると候補になります）。';
+    }
+  }
 
   // 選ばれたリーダーをリーダー枠（スタンダード=枠1 / プラウド=各チーム先頭）へ移動する
   const leaderChanged = [];
@@ -985,9 +1091,42 @@ async function runOptimize() {
   // 提案: パーティのタイプ構成に合わせて、より長所を伸ばせる最適化があれば計算しておく
   ui.suggestion = null;
   try {
-    ui.suggestion = computeStyleSuggestion(members, baseParams, best, result);
+    ui.suggestion = computeStyleSuggestion(best.mem || members,
+      { ...baseParams, members: best.mem || members, contexts: best.ctx || contexts }, best, result);
   } catch (e) {
     console.warn('提案の計算に失敗:', e);
+  }
+
+  // タイプ別特化の逆転チェック: タイプに合わせて組んだ結果が、パーティ目標のまま組んだ場合より
+  // 弱いキャラがいれば通知する（§12: 打撃で組んだ打撃キャラが射撃で組むより弱いケース）
+  const styleNotes = [];
+  for (const sw of styleSwapped) {
+    try {
+      const asg = result.assignments[sw.cid];
+      const m = (best.mem || members).find((x) => String(x.character.id) === sw.cid);
+      if (!asg || !m) continue;
+      const ctxOf = (best.ctx || contexts)[sw.cid];
+      const detail = (ids) => characterDetail({
+        member: m, ext: result.ext[sw.cid],
+        fragmentList: ids.map(fragDef).filter(Boolean),
+        effectMap: state.game.effectMap, context: ctxOf,
+      });
+      const own = detail(asg.ids).stats[sw.ownStat]?.final || 0;
+      const alt = bestForCharacter({
+        member: m, ext: result.ext[sw.cid], weights,
+        fragmentsById: state.game.fragments, counts,
+        effectMap: state.game.effectMap, context: ctxOf,
+      });
+      const altV = detail(alt.ids || []).stats[sw.partyStat]?.final || 0;
+      if (altV > own * 1.001) {
+        styleNotes.push(
+          `${m.character.name} はタイプに合わせて${STAT_LABELS[sw.ownStat]}で組みましたが、` +
+          `${STAT_LABELS[sw.partyStat]}で組んだ方が高くなります（${fmt0(own)} → ${fmt0(altV)}）。` +
+          `「キャラのタイプに合わせて特化」をオフにするとパーティ目標のまま組めます。`);
+      }
+    } catch (e) {
+      console.warn('タイプ別特化の比較に失敗:', e);
+    }
   }
   for (const [cid, asg] of Object.entries(result.assignments)) {
     const slots = Number(charMy(cid)?.equip_slots) || 3;
@@ -1000,10 +1139,22 @@ async function runOptimize() {
   renderParty();
   reportUnknown(result.unknown);
   for (const w of [...new Set(result.warnings)]) showMsg('warn', `■ ${w}`);
+  for (const note of styleNotes) showMsg('warn', `■ ${note}`);
+  // ULTRAアビリティ持ちがリーダー枠以外にいる場合の案内（発動条件がリーダー/タグ編成のため）
+  if (!proud) {
+    for (const bid of bIds) {
+      const d = charDef(bid);
+      if (!(d?.ultra_ability || []).length) continue;
+      if (String(ui.party.memberIds[0]) === String(bid)) continue;
+      showMsg('info', `■ ${d.name} はULTRAアビリティ持ちです。リーダー枠に置くか参照タグのキャラを編成すると発動・強化されます（キャラ詳細で内容を確認できます。与ダメージ等のため❸の比較には含まれません）。`);
+    }
+  }
   showMsg(result.exact ? 'ok' : 'warn',
     (result.exact ? '最適化が完了しました（厳密解）。装備枠に反映しました。'
       : '最適化を打ち切りで終えました（暫定解）。装備枠に反映しました。') +
-    (leaderChanged.length ? `\nリーダー枠を ${leaderChanged.join(' / ')} に変更しました（Zアビ特殊ルールで最も高くなる配置）。` : ''));
+    (leaderChanged.length ? `\nリーダー枠を ${leaderChanged.join(' / ')} に変更しました（Zアビ特殊ルールで最も高くなる配置）。` : '') +
+    ultraLeaderNote +
+    zenkaiMsg);
 }
 
 // ---------------------------------------------------------------- キャラ選択シート
@@ -1094,7 +1245,7 @@ function openFragPicker(cid, slotIdx) {
     current.map((fid, i) => {
       const f = fid ? fragDef(fid) : null;
       return el('div', {
-        class: `frag-slot${f ? ` fr-${f.rarity || 'default'}` : ''}`,
+        class: `frag-slot${f ? ` fr-${f.rarity || 'default'}` : ''}${isAwakenedFrag(f) ? ' frag-awakened' : ''}`,
         style: i === slotIdx ? 'outline:2px solid var(--accent);outline-offset:2px' : '',
       }, f ? lazyImg(f.icon, f.name) : '＋');
     }));
@@ -1221,9 +1372,9 @@ function openCharSheet(cid) {
     }));
 
   const abilityPreview = () => {
-    const { party, deploy } = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
+    const { z, zenkai, deploy } = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
     const lines = [];
-    for (const [label, groups] of [['パーティ全員に', party], ['バトル3体に', deploy]]) {
+    for (const [label, groups] of [['Zアビ（パーティ全員に）', z], ['ZENKAIアビ（パーティ全員に）', zenkai], ['出撃Zアビ（バトル3体に）', deploy]]) {
       for (const g of groups) {
         for (const e of g.effects) {
           lines.push(`${label}: ${e.base ? '基礎' : ''}${STAT_LABELS[e.stat]} +${e.value}%${g.cond?.length ? '（条件あり）' : ''}`);
@@ -1293,7 +1444,33 @@ function openCharSheet(cid) {
   };
   renderOwnedArea();
 
-  body.append(
+  // ULTRAアビリティ（レアリティULTRAのみ）。与ダメージ等の戦闘効果で ❸ には乗らないため
+  // 原文＋参照タグの編成充足状況を表示し、リーダー/同タグ編成の判断材料にする
+  const ultraView = () => {
+    const list = def.ultra_ability || [];
+    if (!list.length) return null;
+    const bSet = new Set(battleIds().map(String));
+    const battleMembers = partyMembers().filter((m) => bSet.has(String(m.character.id)));
+    return el('div', {},
+      el('h3', {}, el('span', { class: 'ultra-badge' }, 'ULTRA'), ' ウルトラアビリティ'),
+      el('p', { class: 'small-note' },
+        '与ダメージ・気力回復などの戦闘効果のためステータス計算(❸)には含まれません。' +
+        'リーダー枠に置く、または参照タグのキャラを編成すると強化される効果です。'),
+      ...list.map((u) => el('div', { style: 'margin-bottom:8px' },
+        el('div', { class: 'item-title' }, u.name),
+        el('div', { class: 'item-desc', style: 'white-space:pre-wrap' }, u.text),
+        (u.ref_tags || []).length && battleMembers.length
+          ? el('div', {}, (u.ref_tags || []).map((r) => {
+              const n = r.tag != null
+                ? battleMembers.filter((m) => (m.character.tags || []).includes(r.tag)).length
+                : 0;
+              return el('span', { class: n > 0 ? 'ultra-cond-ok' : 'ultra-cond-ng', style: 'margin-right:10px;font-size:12px' },
+                `「${r.name}」バトル3体中 ${n} 体`);
+            }))
+          : null)));
+  };
+
+  body.append(...nodes(
     el('div', { style: 'display:flex;gap:10px' },
       el('div', { style: 'width:84px;flex:none' }, charTile(def, { showOwned: false })),
       el('div', {},
@@ -1304,6 +1481,7 @@ function openCharSheet(cid) {
     ownedArea,
     el('h3', {}, 'ステータス'),
     statTable,
+    ultraView(),
     el('h3', {}, 'アビリティ補正（現在の設定で有効な値）'),
     abilityPreview(),
     el('details', {},
@@ -1311,7 +1489,7 @@ function openCharSheet(cid) {
       [...(def.z_ability || []), ...(def.deploy_z_ability || []), ...(def.zenkai_ability || [])].map((a) =>
         el('div', { class: 'slot-eff' },
           el('div', { class: 'sl' }, a.name),
-          el('div', { class: 'line raw', style: 'white-space:pre-wrap' }, (a.groups || []).map((g) => g.raw).join('\n\n').replace(/\{\{ICN:[^}]+\}\}/g, ''))))));
+          el('div', { class: 'line raw', style: 'white-space:pre-wrap' }, (a.groups || []).map((g) => g.raw).join('\n\n').replace(/\{\{ICN:[^}]+\}\}/g, '')))))));
   openSheet(def.name, body);
 }
 
@@ -1355,10 +1533,53 @@ function renderFrags() {
   rerenderGrid();
 }
 
-function openFragSheet(fid) {
+/**
+ * フラグメント詳細シート。
+ * opts.cid / opts.slotIdx 付き（編成の装備スロットから開いた場合）は、
+ * 現在のパーティに対する効果条件の達成状況と、変更/外すボタンを表示する。
+ */
+function openFragSheet(fid, opts = {}) {
   const f = fragDef(fid);
   if (!f) return;
   const body = el('div', {});
+  const equippedBy = opts.cid != null ? charDef(opts.cid) : null;
+
+  // 装備者視点の効果（条件達成状況・★によるSLOT解放を反映）
+  let equippedView = null;
+  if (equippedBy) {
+    const my = charMy(opts.cid) || defaultCharMy(equippedBy);
+    const members = partyMembers();
+    const ctx = battleContexts(members)[String(opts.cid)];
+    const r = fragmentStatEffects(f, state.game.effectMap, { stars: my.stars ?? 7, context: ctx });
+    equippedView = el('div', {},
+      el('h3', {}, `${equippedBy.name} に装備中の効果`),
+      r.effects.length
+        ? el('div', {}, r.effects.map((e2) => el('div', { class: 'effline' },
+            el('span', { class: 'ultra-cond-ok' }, `✓ ${e2.text || STAT_LABELS[e2.stat] || ''} +${fmt(e2.value, 2)}%`))))
+        : el('p', { class: 'small-note' }, '現在発動中の計算対象効果はありません。'),
+      r.conditionalOff.length
+        ? el('div', {}, r.conditionalOff.map((c) => el('div', { class: 'effline' },
+            el('span', { class: 'ultra-cond-ng' }, `⚠ 条件未達: ${c.cond_raw || ''}${c.text}+${c.value}%`))))
+        : null,
+      (r.others || []).length
+        ? el('p', { class: 'small-note' }, `計算対象外の効果: ${r.others.join(' / ')}`)
+        : null,
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', {
+          class: 'btn secondary',
+          onclick: () => { closeSheet(); openFragPicker(opts.cid, opts.slotIdx); },
+        }, '別のフラグに変更'),
+        el('button', {
+          class: 'btn danger',
+          onclick: async () => {
+            const arr = memberEquips(opts.cid);
+            arr[opts.slotIdx] = null;
+            ui.party.equips[String(opts.cid)] = arr;
+            await persistMy();
+            closeSheet(); renderParty();
+          },
+        }, '外す')));
+  }
 
   const countRow = el('div', { class: 'row', style: 'align-items:center' });
   const renderCountRow = () => {
@@ -1377,14 +1598,16 @@ function openFragSheet(fid) {
 
   const equippableNames = (f.equip_char_ids || []).map((id) => charDef(id)?.name).filter(Boolean);
 
-  body.append(
+  body.append(...nodes(
     el('div', { style: 'display:flex;gap:10px;align-items:flex-start' },
       el('div', { style: 'width:74px;flex:none' }, fragTile(f, {})),
       el('div', {},
         el('div', { class: 'item-title' }, f.name),
         el('div', { class: 'item-desc' }, f.rarity_label || RARITY_LABELS[f.rarity] || f.rarity || ''),
+        isAwakenedFrag(f) ? el('div', { class: 'item-desc', style: 'color:var(--fr-awakenedgold);font-weight:700' }, '覚醒フラグメント') : null,
         isTournamentOnly(f) ? el('div', { class: 'item-desc', style: 'color:var(--warn)' }, '力の大会専用（通常バトルの最適化からは除外されます）') : null,
         f.condition_text ? el('div', { class: 'item-desc' }, `装備条件: ${f.condition_text}`) : null)),
+    equippedView,
     countRow,
     el('h3', {}, '効果（数値は最大値）'),
     Array.isArray(f.slots) && f.slots.length
@@ -1395,7 +1618,7 @@ function openFragSheet(fid) {
       ? el('details', {},
           el('summary', {}, `装備可能キャラ ${f.equip_char_ids.length} 体`),
           el('p', { class: 'small-note' }, equippableNames.slice(0, 40).join(' / ') + (equippableNames.length > 40 ? ' …' : '')))
-      : el('p', { class: 'small-note' }, '装備条件なし（全キャラ装備可）'));
+      : el('p', { class: 'small-note' }, '装備条件なし（全キャラ装備可）')));
   openSheet(f.name, body);
 }
 

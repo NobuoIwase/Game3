@@ -412,3 +412,61 @@ test('partyAbilityCorrections: leaders 指定で null はリーダー無し（�
   assert.equal(ext['2'].z.strike_atk, 50, 'リーダー無し: 1のZアビ(タグ9)は2に乗らない');
   assert.equal(ext['1'].z.strike_atk, 0, 'リーダー無し: タグ無視の受け取りも発生しない');
 });
+
+test('pickZenkaiMembers: 条件一致するアビ持ちだけが選ばれ、恩恵順に並ぶ', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },
+    { character: charaV2(2, [7]), my: myOf() },
+    { character: charaV2(3, [8]), my: myOf() },
+  ];
+  const candidates = [
+    // タグ7に+30 → バトル2体に乗る（恩恵大）
+    { character: charaV2(10, [99], {}, { z_ability: zAb(7, 30) }), my: myOf() },
+    // タグ8に+50 → バトル1体に乗る
+    { character: charaV2(11, [99], {}, { z_ability: zAb(8, 50) }), my: myOf() },
+    // タグ777（誰にも一致しない）→ 恩恵ゼロで選ばれない
+    { character: charaV2(12, [99], {}, { z_ability: zAb(777, 99) }), my: myOf() },
+    // アビ無し → 選ばれない
+    { character: charaV2(13, [99]), my: myOf() },
+  ];
+  const picks = pickZenkaiMembers({
+    battleMembers, candidates, weights: { strike_atk: 1 }, effectMap,
+  });
+  assert.deepEqual(picks.map((p) => p.id), [10, 11], '恩恵のある2体だけが恩恵順で選ばれる');
+  // 10 の恩恵: 30% × 2体 × 100000 × 0.01 = 60000 / 11: 50% × 1体 × 0.01×100000 = 50000
+  assert.ok(picks[0].delta > picks[1].delta);
+});
+
+test('pickZenkaiMembers: リーダーはタグ無視でZアビを受けるため無関係タグでも恩恵になる', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [{ character: charaV2(1, [7]), my: myOf() }];
+  const candidates = [{ character: charaV2(10, [99], {}, { z_ability: zAb(777, 40) }), my: myOf() }];
+  const none = pickZenkaiMembers({ battleMembers, candidates, weights: { strike_atk: 1 }, effectMap });
+  assert.equal(none.length, 0, 'リーダー無しでは恩恵ゼロ');
+  const withLeader = pickZenkaiMembers({ battleMembers, candidates, weights: { strike_atk: 1 }, effectMap, leaderId: 1 });
+  assert.equal(withLeader.length, 1, 'リーダー指定でタグ無視の受け取りが恩恵になる');
+});
+
+test('optimizeParty: weightsById でキャラごとに別の重みで組める（タイプ別特化）', () => {
+  // フラグA=打撃+20% / フラグB=射撃+20%。どちらも両キャラ装備可・所持十分
+  const frags = {
+    900: { id: 900, name: '打撃フラグ', rarity: '', equip_conditions: {}, effects: [{ stat: 'strike_atk', base: true, value: 20 }] },
+    901: { id: 901, name: '射撃フラグ', rarity: '', equip_conditions: {}, effects: [{ stat: 'blast_atk', base: true, value: 20 }] },
+  };
+  const members = [
+    { character: charaV2(1, [7], { blast_atk: 100_000 }), my: myOf(1) }, // 射撃で組むキャラ
+    { character: charaV2(2, [7], { blast_atk: 100_000 }), my: myOf(1) }, // 打撃で組むキャラ(上書き)
+  ];
+  const r = optimizeParty({
+    members, battleIds: [1, 2],
+    fragmentsById: frags, counts: { 900: 6, 901: 6 },
+    weights: { blast_atk: 1 },
+    weightsById: { 2: { strike_atk: 1 } },
+    effectMap, targets: 'battle',
+  });
+  assert.deepEqual(r.assignments['1'].ids, ['901'], 'キャラ1はパーティ目標(射撃)で組む');
+  assert.deepEqual(r.assignments['2'].ids, ['900'], 'キャラ2は上書き重み(打撃)で組む');
+});
