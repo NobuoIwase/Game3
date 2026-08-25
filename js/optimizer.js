@@ -231,7 +231,9 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
       const idSet = new Set(teamIds.map(String));
       const teamMembers = members.filter((m) => idSet.has(String(m.character.id)));
       if (teamMembers.length === 0) return;
-      const teamLeader = (leaders && leaders[i] != null) ? leaders[i] : teamIds[0];
+      // leaders が渡されている場合はその値に従う（null = リーダー枠が空 → 特殊ルールなし）。
+      // leaders 省略時のみ各チーム先頭へフォールバックする
+      const teamLeader = leaders ? (leaders[i] ?? null) : teamIds[0];
       Object.assign(out, abilityCorrections(teamMembers, teamIds, effectMap, { leaderId: teamLeader }));
     });
     return out;
@@ -307,6 +309,9 @@ export function isTournamentOnly(fragment) {
   return fragment.top === true;
 }
 
+/** 探索前の候補数上限。超えた場合は単体スコア上位に絞る（結果に truncated を立てる） */
+const MAX_ITEMS_PER_CHAR = 150;
+
 function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings) {
   const items = [];
   for (const frag of candidates) {
@@ -330,22 +335,58 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, conte
   return items;
 }
 
+/** 候補が多すぎる場合に単体スコア上位へ絞る。{items, truncated} を返す */
+function limitItems(items, ctx) {
+  if (items.length <= MAX_ITEMS_PER_CHAR) return { items, truncated: false };
+  const scored = items.map((it) => ({ it, s: scoreOf(ctx, it.base, it.nonBase) }));
+  scored.sort((a, b) => b.s - a.s);
+  return { items: scored.slice(0, MAX_ITEMS_PER_CHAR).map((x) => x.it), truncated: true };
+}
+
 /**
  * 最良の1組合せだけを直接探索する（組合せリストを保持しない）。
  * 奪い合いが起こりえない場合（全候補の所持数 >= 対象キャラ数）はこれで厳密解になる。
+ * 上界枝刈り: 残り枠 × 各ステータスの後続最大値で楽観スコアを見積もり、最良を下回る枝を捨てる。
+ * ❸ は基礎あり・基礎なしのどちらにも単調増加なのでこの見積もりは正しい上界になる。
  */
 function enumerateBest(items, slots, ctx) {
   const nStats = ctx.stats.length;
+  const n = items.length;
+  // 単体スコアの高い順に並べると最良解が早く見つかり枝刈りが効く
+  const zero = new Float64Array(nStats);
+  const sorted = [...items].sort((a, b) => {
+    const sa = scoreOf(ctx, a.base, a.nonBase);
+    const sb = scoreOf(ctx, b.base, b.nonBase);
+    return sb - sa;
+  });
+  // 後続アイテムのステータス別最大値（上界計算用）
+  const sufMaxBase = new Float64Array((n + 1) * nStats);
+  const sufMaxNonBase = new Float64Array((n + 1) * nStats);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = 0; j < nStats; j++) {
+      sufMaxBase[i * nStats + j] = Math.max(sufMaxBase[(i + 1) * nStats + j], sorted[i].base[j]);
+      sufMaxNonBase[i * nStats + j] = Math.max(sufMaxNonBase[(i + 1) * nStats + j], sorted[i].nonBase[j]);
+    }
+  }
   const fragBase = new Float64Array(nStats);
   const fragNonBase = new Float64Array(nStats);
+  const optBase = new Float64Array(nStats);
+  const optNonBase = new Float64Array(nStats);
   const chosen = [];
-  let best = { ids: [], score: scoreOf(ctx, fragBase, fragNonBase) };
+  let best = { ids: [], score: scoreOf(ctx, zero, zero) };
+  const EPS = 1e-12;
   const dfs = (idx, remaining) => {
     const score = scoreOf(ctx, fragBase, fragNonBase);
     if (score > best.score) best = { ids: chosen.slice(), score };
-    if (remaining === 0) return;
-    for (let i = idx; i < items.length; i++) {
-      const item = items[i];
+    if (remaining === 0 || idx >= n) return;
+    // 上界: 残り remaining 枠すべてに後続最大値が入ったと仮定
+    for (let j = 0; j < nStats; j++) {
+      optBase[j] = fragBase[j] + remaining * sufMaxBase[idx * nStats + j];
+      optNonBase[j] = fragNonBase[j] + remaining * sufMaxNonBase[idx * nStats + j];
+    }
+    if (scoreOf(ctx, optBase, optNonBase) <= best.score + EPS) return;
+    for (let i = idx; i < n; i++) {
+      const item = sorted[i];
       for (let j = 0; j < nStats; j++) {
         fragBase[j] += item.base[j];
         fragNonBase[j] += item.nonBase[j];
@@ -417,7 +458,9 @@ export function bestForCharacter(p) {
   }
   const candidates = equippableFragments(p.member.character, p.fragmentsById);
   const stars = p.member.my?.stars ?? 7;
-  const items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings);
+  const prepared = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings);
+  const { items, truncated } = limitItems(prepared, ctx);
+  if (truncated) warnings.messages.push('候補が多いため単体スコア上位に絞って探索しました（厳密解でない可能性があります）');
   const slots = Number(p.member.my && p.member.my.equip_slots) || 3;
   const best = enumerateBest(items, slots, ctx);
   return { ids: best.ids, score: best.score, warnings: warnings.messages, unknown: warnings.unknown };
@@ -450,15 +493,21 @@ export function optimizeParty(p) {
   const maxCombos = p.maxCombosPerChar ?? 20000;
   let exact = true;
 
-  // 各キャラの候補を準備
+  // 各キャラの候補を準備。
+  // items（フラグメント側の寄与）はリーダー・ext に依存しないため、リーダー総当たり間で
+  // p.itemsCache により再利用できる（キャッシュは同一の重み・文脈で使うこと）
   const prepared = targets.map((member) => {
     const cid = String(member.character.id);
     const ctx = makeScoreContext(member, ext[cid], weights, weightedStats, warnings);
     if (!ctx) return { cid, member, ctx: null, items: [], slots: 0 };
-    const candidates = equippableFragments(member.character, p.fragmentsById);
-    const stars = member.my?.stars ?? 7;
-    const context = p.contexts ? p.contexts[cid] : undefined;
-    const items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, context, p.includeTournament === true, warnings);
+    let items = p.itemsCache && p.itemsCache[cid];
+    if (!items) {
+      const candidates = equippableFragments(member.character, p.fragmentsById);
+      const stars = member.my?.stars ?? 7;
+      const context = p.contexts ? p.contexts[cid] : undefined;
+      items = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, context, p.includeTournament === true, warnings);
+      if (p.itemsCache) p.itemsCache[cid] = items;
+    }
     const slots = Number(member.my && member.my.equip_slots) || 3;
     return { cid, member, ctx, items, slots };
   });
@@ -473,12 +522,21 @@ export function optimizeParty(p) {
   if (!contended) {
     const assignments = {};
     let totalScore = 0;
+    let anyTruncated = false;
     for (const pc of prepared) {
-      const best = pc.ctx ? enumerateBest(pc.items, pc.slots, pc.ctx) : { ids: [], score: 0 };
+      let best = { ids: [], score: 0 };
+      if (pc.ctx) {
+        const lim = limitItems(pc.items, pc.ctx);
+        anyTruncated = anyTruncated || lim.truncated;
+        best = enumerateBest(lim.items, pc.slots, pc.ctx);
+      }
       assignments[pc.cid] = { ids: best.ids, score: best.score };
       totalScore += best.score;
     }
-    return { assignments, totalScore, exact: true, ext, warnings: warnings.messages, unknown: warnings.unknown };
+    if (anyTruncated) {
+      warnings.messages.push('候補が多いキャラは単体スコア上位に絞って探索しました（厳密解でない可能性があります）');
+    }
+    return { assignments, totalScore, exact: !anyTruncated, contended: false, ext, warnings: warnings.messages, unknown: warnings.unknown };
   }
 
   // 奪い合いあり（所持数を減らしている場合）→ 組合せ列挙＋分枝限定法
@@ -567,7 +625,7 @@ export function optimizeParty(p) {
     const combo = bestPick[i] || { ids: [], score: 0 };
     assignments[pc.cid] = { ids: combo.ids, score: combo.score };
   });
-  return { assignments, totalScore: bestScore, exact, ext, warnings: warnings.messages, unknown: warnings.unknown };
+  return { assignments, totalScore: bestScore, exact, contended: true, ext, warnings: warnings.messages, unknown: warnings.unknown };
 }
 
 /**

@@ -85,3 +85,24 @@ test('parseConditionalSlot: 折り返された効果条件ブロックを解析�
   ], TAGS2);
   assert.equal(r3, null);
 });
+
+test('parseConditionalSlot: 人数比例形式（1人につき〜ずつアップ）', async () => {
+  const { parseConditionalSlot } = await import('../tools/crawl_dblegends.mjs');
+  const T = { 'フリーザ軍': 5, 'GT': 32 };
+  const r = parseConditionalSlot([
+    'バトルメンバーの「タグ：フリーザ軍」または「タグ：GT」1人につき、',
+    '自身の打撃攻撃力を2.00% ~ 5.00%ずつアップ',
+  ], T);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].cond_per_member, true);
+  assert.equal(r[0].value, 5);
+  assert.equal(r[0].value_min, 2);
+  assert.deepEqual(r[0].cond, [[{ tag: 5, name: 'フリーザ軍' }], [{ tag: 32, name: 'GT' }]]);
+});
+
+test('parseAbilityText: 「〜%アップする」節と%を持たない節の混在', () => {
+  const g = parseAbilityText('基礎打撃攻撃力を20%アップする&必殺アーツコストを5ダウン', TAGS);
+  assert.equal(g.length, 1);
+  assert.deepEqual(g[0].effects, [{ text: '基礎打撃攻撃力', value: 20 }]);
+  assert.ok(g[0].unresolved.some((u) => u.includes('必殺アーツコスト')), '%なし節はunresolvedへ');
+});

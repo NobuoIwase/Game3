@@ -136,15 +136,22 @@ export function resolveEffect(entry, effectMap) {
  *   context が無い場合（パーティ文脈の外での計算）は条件不成立として扱う。
  * @returns {boolean}
  */
-export function fragmentConditionSatisfied(line, context) {
-  if (!line.cond) return true;
-  if (!context || !Array.isArray(context.members)) return false;
+/** 条件に一致するバトルメンバー数を数える。文脈が無ければ null */
+export function fragmentConditionCount(line, context) {
+  if (!context || !Array.isArray(context.members)) return null;
   let n = 0;
   for (const m of context.members) {
     if (line.cond_exclude_self && String(m.id) === String(context.selfId)) continue;
     if (conditionMatches(line.cond, m)) n++;
   }
-  return n >= (line.cond_count || 1);
+  return n;
+}
+
+export function fragmentConditionSatisfied(line, context) {
+  if (!line.cond) return true;
+  const n = fragmentConditionCount(line, context);
+  if (n == null) return false;
+  return line.cond_per_member ? n > 0 : n >= (line.cond_count || 1);
 }
 
 /**
@@ -183,8 +190,17 @@ export function fragmentStatEffects(fragment, effectMap, opts = {}) {
       if (slot.star7 && stars < 7) continue;
       for (const line of slot.lines || []) {
         if (line.raw != null) continue; // アビリティ文（%値を持たない行）は計算対象外
-        if (line.cond && !fragmentConditionSatisfied(line, opts.context)) {
-          conditionalOff.push({ text: line.text, value: line.value, cond_raw: line.cond_raw });
+        if (line.cond) {
+          const n = fragmentConditionCount(line, opts.context);
+          // 人数比例（1人につき〜ずつ）は該当人数を掛ける。通常条件は成立時に1倍
+          const mult = line.cond_per_member
+            ? (n || 0)
+            : ((n != null && n >= (line.cond_count || 1)) ? 1 : 0);
+          if (mult <= 0) {
+            conditionalOff.push({ text: line.text, value: line.value, cond_raw: line.cond_raw });
+            continue;
+          }
+          push({ text: line.text, value: line.value * mult });
           continue;
         }
         push(line);

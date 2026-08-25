@@ -131,3 +131,22 @@ test('タッグキャラの2属性: どちらの属性でも色限定条件に�
   const single = { tags: [], element: 'PUR' };
   assert.equal(conditionMatches([[{ element: 'PUR' }]], single), true, 'elements 無しでも従来通り');
 });
+
+test('人数比例の効果条件: 該当メンバー数×効果値で適用される', () => {
+  const frag = {
+    id: 90, name: '人数比例',
+    slots: [{ label: 'SLOT 3', star7: false, lines: [
+      { text: '打撃攻撃力', value: 5, value_min: 2, cond: [[{ tag: 5 }]], cond_count: 1,
+        cond_exclude_self: false, cond_per_member: true, cond_scope: 'battle', cond_raw: '…1人につき、' },
+    ] }],
+  };
+  const mk = (n) => ({ selfId: 1, members: Array.from({ length: 3 }, (_, i) =>
+    ({ id: i + 1, tags: i < n ? [5] : [], element: 'RED' })) });
+  const r0 = fragmentStatEffects(frag, effectMap, { context: mk(0) });
+  assert.equal(r0.effects.length, 0);
+  assert.equal(r0.conditionalOff.length, 1, '該当0人 → 未発動');
+  const r2 = fragmentStatEffects(frag, effectMap, { context: mk(2) });
+  assert.deepEqual(r2.effects, [{ stat: 'strike_atk', base: false, value: 10 }], '2人 → 5%×2');
+  const r3 = fragmentStatEffects(frag, effectMap, { context: mk(3) });
+  assert.equal(r3.effects[0].value, 15, '3人 → 5%×3');
+});

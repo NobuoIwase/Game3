@@ -168,16 +168,18 @@ export function parseAbilityText(text, tagNameToId) {
       if (!body) continue;
 
       // 1行に複数の効果が「&」で連結されることがある（例: ZENKAIアビIII/IV）。
-      // 各節の形式: [バトル時、][「タグ：X」または「…」かつ「…」の]<効果名>[を]<値>%[アップ]
-      const clauseRe = /^(?:バトル時、)?((?:「[^」]+」(?:または|かつ)?)*)の?(.+?)[をが]?\s*\+?([\d.]+)\s*[%％](?:アップ)?$/;
+      // 各節の形式: [バトル時、][「タグ：X」または「…」かつ「…」の]<効果名>[を]<値>%[アップ][する]
+      const clauseRe = /^(?:バトル時、)?((?:「[^」]+」(?:または|かつ)?)*)の?(.+?)[をが]?\s*\+?([\d.]+)\s*[%％](?:アップ)?(?:する)?$/;
       const clauses = body.split('&').map((s) => s.trim()).filter(Boolean);
       const parsed = clauses.map((c) => {
         const m = c.match(clauseRe);
         if (!m || m[2].includes('「')) return null;
-        return { condText: m[1] || '', text: m[2].trim(), value: Number(m[3]) };
+        return { clause: c, condText: m[1] || '', text: m[2].trim(), value: Number(m[3]) };
       });
-      if (parsed.length > 0 && parsed.every(Boolean)) {
-        for (const p of parsed) {
+      // 解析できた節だけ採用し、できなかった節（%を持たないダウン系等）は unresolved に残す
+      if (parsed.some(Boolean)) {
+        parsed.forEach((p, i) => {
+          if (!p) { g.unresolved.push(clauses[i]); return; }
           if (p.condText) {
             // 条件付きの節は独立グループにする
             const unresolved = [];
@@ -186,7 +188,7 @@ export function parseAbilityText(text, tagNameToId) {
           } else {
             g.effects.push({ text: p.text, value: p.value });
           }
-        }
+        });
         continue;
       }
       g.unresolved.push(body);
@@ -374,9 +376,17 @@ export function parseEquipList(html) {
  */
 export function parseConditionalSlot(rawLines, tagNameToId) {
   const joined = rawLines.join('');
-  const m = joined.match(
+  // 形式1: 「…が[N人[以上]]いると、〜アップ」 / 形式2: 「…1人につき、〜ずつアップ」（人数比例）
+  let perMember = false;
+  let m = joined.match(
     /^(?:バトルメンバーに)?(自身以外の)?((?:「[^」]+」(?:または|かつ)?)+)が(?:(\d+)人(?:以上)?)?いると[、]?(.+)$/
   );
+  if (!m) {
+    const pm = joined.match(
+      /^(?:バトルメンバーの)?(自身以外の)?((?:「[^」]+」(?:または|かつ)?)+)1人につき[、]?(.+)$/
+    );
+    if (pm) { perMember = true; m = [pm[0], pm[1], pm[2], undefined, pm[3]]; }
+  }
   if (!m) return null;
   const unresolved = [];
   const cond = parseInlineConditions(m[2], tagNameToId, unresolved);
@@ -388,9 +398,10 @@ export function parseConditionalSlot(rawLines, tagNameToId) {
     cond_scope: 'battle',
     cond_raw: joined.slice(0, joined.length - m[4].length),
   };
-  // 効果部: 「自身の<名前>を/が <値>%[ ~ <値>%]アップ」の連続
+  if (perMember) condMeta.cond_per_member = true; // 効果値 × 該当人数
+  // 効果部: 「自身の<名前>を/が <値>%[ ~ <値>%][ずつ]アップ」の連続
   const lines = [];
-  const effRe = /(?:自身の)?([^、。]+?)[をが]\s*([+-]?[\d.]+)\s*[%％](?:\s*[~〜～]\s*\+?(-?[\d.]+)\s*[%％])?アップ/g;
+  const effRe = /(?:自身の)?([^、。]+?)[をが]\s*([+-]?[\d.]+)\s*[%％](?:\s*[~〜～]\s*\+?(-?[\d.]+)\s*[%％])?(?:ずつ)?アップ/g;
   let em;
   let matchedLen = 0;
   while ((em = effRe.exec(m[4])) !== null) {

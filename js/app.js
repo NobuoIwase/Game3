@@ -288,13 +288,22 @@ function battleIds() {
   const ids = ui.party.mode === 'proud' ? ui.party.memberIds : ui.party.memberIds.slice(0, 3);
   return ids.filter((id) => id && charDef(id));
 }
-/** プラウド時のチーム分け（1戦目=枠1-3 / 2戦目=枠4-6） */
+/**
+ * プラウド時のチーム分け（1戦目=枠1-3 / 2戦目=枠4-6）。
+ * 空チームも位置を保持して返す（leaders 配列との添字対応を崩さないため。
+ * optimizer 側が空チームを安全にスキップする）
+ */
 function proudTeams() {
   if (ui.party.mode !== 'proud') return null;
   return [
     ui.party.memberIds.slice(0, 3).filter((id) => id && charDef(id)),
     ui.party.memberIds.slice(3, 6).filter((id) => id && charDef(id)),
-  ].filter((t) => t.length > 0);
+  ];
+}
+
+/** 編成の署名（提案カードの陳腐化検出に使う） */
+function partySig() {
+  return JSON.stringify([ui.party.mode, ...ui.party.memberIds]);
 }
 /**
  * 効果条件（「バトルメンバーに〜がいると」）の判定文脈をキャラごとに作る。
@@ -348,7 +357,8 @@ function syncPartyToMyData() {
   state.my.parties = [{
     name: '編成1',
     mode: ui.party.mode,
-    member_ids: ui.party.memberIds.map(Number),
+    // 空きスロットは null で位置を保持（キャラID 0 = 孫悟空 と衝突させない）
+    member_ids: ui.party.memberIds.map((x) => (x === '' || x == null ? null : Number(x))),
     battle_ids: battleIds().map(Number),
     equips: ui.party.equips,
     display_stat: ui.displayStat,
@@ -358,7 +368,7 @@ function syncPartyToMyData() {
 function restorePartyFromMyData() {
   const p = state.my.parties?.[0];
   if (!p) return;
-  const ids = (p.member_ids || []).map((x) => (x ? String(x) : ''));
+  const ids = (p.member_ids || []).map((x) => (x == null || x === '' ? '' : String(x)));
   ui.party.memberIds = [0, 1, 2, 3, 4, 5].map((i) => ids[i] || '');
   ui.party.equips = p.equips || {};
   ui.party.mode = p.mode === 'proud' ? 'proud' : 'standard';
@@ -713,6 +723,7 @@ function computeStyleSuggestion(members, baseParams, best, mainResult) {
 
   const styleTag = tagName(dominant.tag);
   return {
+    sig: partySig(), // 編成が変わったら提案は無効
     text: `このパーティは「${styleTag}」が ${count}/${targetMembers.length} 体です。` +
       `${dominant.objLabel}に切り替えると ${STAT_LABELS[dominant.metric]} 合計が ` +
       `${fmt0(curTotal)} → ${fmt0(sugTotal)}（+${fmt(((sugTotal / curTotal) - 1) * 100, 1)}%）になります。`,
@@ -725,8 +736,16 @@ function computeStyleSuggestion(members, baseParams, best, mainResult) {
 async function applySuggestion() {
   const s = ui.suggestion;
   if (!s) return;
+  if (s.sig !== partySig()) {
+    ui.suggestion = null;
+    renderParty();
+    showMsg('warn', '■ 編成が変わったため、この提案は無効になりました。もう一度最適化を実行してください。');
+    return;
+  }
   Object.assign(ui.opt, s.optPatch);
+  const current = new Set(ui.party.memberIds.filter(Boolean).map(String));
   for (const [cid, asg] of Object.entries(s.assignments)) {
+    if (!current.has(String(cid))) continue; // 現編成にいないキャラには書き込まない
     const slots = Number(charMy(cid)?.equip_slots) || 3;
     const arr = asg.ids.slice(0, slots);
     while (arr.length < slots) arr.push(null);
@@ -734,6 +753,7 @@ async function applySuggestion() {
   }
   ui.suggestion = null;
   await persistMy();
+  ui._flashCards = true;
   renderParty();
   showMsg('ok', '提案の最適化を適用しました。');
 }
@@ -741,6 +761,7 @@ async function applySuggestion() {
 function renderSuggestionCard() {
   const s = ui.suggestion;
   if (!s) return null;
+  if (s.sig !== partySig()) { ui.suggestion = null; return null; } // 編成変更で自動失効
   return el('div', { class: 'card sub-card' },
     el('h3', {}, '💡 提案: 長所を伸ばす最適化'),
     el('p', { class: 'hint' }, s.text),
@@ -903,14 +924,48 @@ async function runOptimize() {
     leaderCombos = [currentLeaders];
   }
 
+  // リーダー候補の比較は「重み付きの最終ステ絶対値の合計」で行う。
+  // optimizeParty の totalScore は補正込みの ❸/❸₀ 相対値で、❸₀ 自体がリーダーに依存して
+  // 変わるため、リーダー間の比較には使えない（補正の大きいリーダーほど相対値が縮む）。
+  const absScoreOf = (r) => {
+    let total = 0;
+    for (const [cid, asg] of Object.entries(r.assignments)) {
+      const m = members.find((x) => String(x.character.id) === cid);
+      if (!m) continue;
+      const d = characterDetail({
+        member: m, ext: r.ext[cid],
+        fragmentList: asg.ids.map(fragDef).filter(Boolean),
+        effectMap: state.game.effectMap, context: contexts[cid],
+      });
+      for (const [s, w] of Object.entries(weights)) {
+        if (w > 0 && d.stats[s]) total += w * d.stats[s].final;
+      }
+    }
+    return total;
+  };
+
+  const computingMsg = showMsg('info', '最適化を計算中…');
+  const itemsCache = {}; // フラグメント寄与はリーダー非依存なので候補間で再利用する
   let best = null;
-  for (const combo of leaderCombos) {
-    const r = optimizeParty({
-      ...baseParams,
-      leaderId: proud ? undefined : combo[0],
-      leaders: proud ? combo : undefined,
-    });
-    if (!best || r.totalScore > best.result.totalScore) best = { result: r, leaders: combo };
+  try {
+    for (const combo of leaderCombos) {
+      const r = optimizeParty({
+        ...baseParams,
+        itemsCache,
+        leaderId: proud ? undefined : combo[0],
+        leaders: proud ? combo : undefined,
+      });
+      const abs = absScoreOf(r);
+      if (!best || abs > best.abs) best = { result: r, leaders: combo, abs };
+      if (r.contended && leaderCombos.length > 1) {
+        // 所持数を絞って奪い合いがある場合は探索が重いため、現在の配置のみで実行する
+        showMsg('info', '所持数を絞っているため、リーダー探索は現在のリーダー配置のみで実行しました。');
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 0)); // UIへ描画の機会を譲る
+    }
+  } finally {
+    computingMsg.remove();
   }
   const result = best.result;
 

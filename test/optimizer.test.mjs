@@ -379,3 +379,36 @@ test('characterDetail: §2-4 ケース(2) を v2 データ形式のフルパイ�
   assert.equal(Math.round(s.corr5), 364);
   assert.equal(Math.round(s.fragTotal), 167);
 });
+
+test('partyAbilityCorrections: 空チームがあっても leaders の添字対応が保たれる', () => {
+  const mk = (id, tags, cond) => ({
+    character: charaV2(id, tags, {}, { z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond, effects: [{ text: '基礎打撃攻撃力', value: 50 }], unresolved: [], raw: '' }] }] }),
+    my: myOf(),
+  });
+  // チーム1は空。チーム2の5番（タグ9のZアビ＝誰にも一致しない）をリーダー指定
+  const members = [mk(4, [7], [[{ tag: 7 }]]), mk(5, [8], [[{ tag: 9 }]]), mk(6, [7], [[{ tag: 7 }]])];
+  const ext = partyAbilityCorrections({
+    members, battleIds: [4, 5, 6],
+    teams: [[], [4, 5, 6]],
+    leaders: [null, 5],
+    effectMap,
+  });
+  // リーダー5の特殊ルール: 5のZアビ(タグ9条件・本来誰にも乗らない)がタグ無視で4/6に乗る
+  assert.equal(ext['4'].z.strike_atk, 150, '4: 自分の50 + 6の50(タグ7一致) + リーダー5の50(タグ無視)');
+  assert.equal(ext['6'].z.strike_atk, 150, '6: 自分の50 + 4の50(タグ7一致) + リーダー5の50(タグ無視)');
+  // リーダー5自身は他キャラのZアビをタグ無視で受ける（4と6の50×2。自身のタグ9条件は自分に不一致のまま）
+  assert.equal(ext['5'].z.strike_atk, 100, '5: 4と6のZアビをタグ無視で受ける');
+});
+
+test('partyAbilityCorrections: leaders 指定で null はリーダー無し（先頭フォールバックしない）', () => {
+  const mk = (id, tags, cond) => ({
+    character: charaV2(id, tags, {}, { z_ability: [{ id: 0, name: 'ZアビリティI', groups: [{ cond, effects: [{ text: '基礎打撃攻撃力', value: 50 }], unresolved: [], raw: '' }] }] }),
+    my: myOf(),
+  });
+  const members = [mk(1, [7], [[{ tag: 9 }]]), mk(2, [8], [[{ tag: 8 }]])];
+  const ext = partyAbilityCorrections({
+    members, battleIds: [1, 2], teams: [[1, 2]], leaders: [null], effectMap,
+  });
+  assert.equal(ext['2'].z.strike_atk, 50, 'リーダー無し: 1のZアビ(タグ9)は2に乗らない');
+  assert.equal(ext['1'].z.strike_atk, 0, 'リーダー無し: タグ無視の受け取りも発生しない');
+});
