@@ -368,14 +368,31 @@ export function isTournamentOnly(fragment) {
 /** 探索前の候補数上限。超えた場合は単体スコア上位に絞る（結果に truncated を立てる） */
 const MAX_ITEMS_PER_CHAR = 150;
 
-function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings) {
+/**
+ * フラグメントの「種」。覚醒版はベース版のアイコンID（EqIco_<ベースID>）を共有するため、
+ * アイコンIDを種キーとして使う（無ければ自身のID）。
+ * 覚醒前と覚醒後の同一種は同じキャラに同時装備できない（実機仕様）。
+ */
+export function fragSpecies(frag) {
+  const m = String(frag?.icon || '').match(/EqIco_(\d+)\./);
+  return m ? m[1] : String(frag?.id ?? '');
+}
+const isAwakened = (frag) => String(frag?.rarity || '').startsWith('awakened');
+/** 同一キャラに同時装備できない組か（同一種で覚醒/非覚醒が異なる） */
+export function fragsConflict(a, b) {
+  return fragSpecies(a) === fragSpecies(b) && isAwakened(a) !== isAwakened(b);
+}
+
+function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings, avoidUnmetCond) {
   const items = [];
   for (const frag of candidates) {
     if (isTournamentOnly(frag) && !includeTournament) continue;
     const count = counts[String(frag.id)] || 0;
     if (count <= 0) continue;
-    const { effects, unknown } = fragmentStatEffects(frag, effectMap, { stars, context });
+    const { effects, unknown, conditionalOff } = fragmentStatEffects(frag, effectMap, { stars, context });
     allWarnings.unknown.push(...unknown);
+    // 「効果条件を満たせないフラグは選ばない」: 未達の条件付き効果を持つ候補を除外する
+    if (avoidUnmetCond && (conditionalOff || []).length > 0) continue;
     const base = new Float64Array(weightedStats.length);
     const nonBase = new Float64Array(weightedStats.length);
     let relevant = false;
@@ -386,9 +403,20 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, conte
       if (e.value !== 0) relevant = true;
     }
     if (!relevant) continue;
-    items.push({ id: String(frag.id), name: frag.name || String(frag.id), count, base, nonBase });
+    items.push({
+      id: String(frag.id), name: frag.name || String(frag.id), count, base, nonBase,
+      species: fragSpecies(frag), awakened: isAwakened(frag),
+    });
   }
   return items;
+}
+
+/** 覚醒前後の同一種は同じキャラに同時装備できない（species 同一かつ覚醒フラグが異なる） */
+function conflictsWithChosen(item, chosenItems) {
+  for (const c of chosenItems) {
+    if (c.species === item.species && c.awakened !== item.awakened) return true;
+  }
+  return false;
 }
 
 /** 候補が多すぎる場合に単体スコア上位へ絞る。{items, truncated} を返す */
@@ -429,6 +457,7 @@ function enumerateBest(items, slots, ctx) {
   const optBase = new Float64Array(nStats);
   const optNonBase = new Float64Array(nStats);
   const chosen = [];
+  const chosenItems = [];
   let best = { ids: [], score: scoreOf(ctx, zero, zero) };
   const EPS = 1e-12;
   const dfs = (idx, remaining) => {
@@ -443,13 +472,16 @@ function enumerateBest(items, slots, ctx) {
     if (scoreOf(ctx, optBase, optNonBase) <= best.score + EPS) return;
     for (let i = idx; i < n; i++) {
       const item = sorted[i];
+      if (conflictsWithChosen(item, chosenItems)) continue; // 覚醒前後の同一種は排他
       for (let j = 0; j < nStats; j++) {
         fragBase[j] += item.base[j];
         fragNonBase[j] += item.nonBase[j];
       }
       chosen.push(item.id);
+      chosenItems.push(item);
       dfs(i + 1, remaining - 1);
       chosen.pop();
+      chosenItems.pop();
       for (let j = 0; j < nStats; j++) {
         fragBase[j] -= item.base[j];
         fragNonBase[j] -= item.nonBase[j];
@@ -467,6 +499,7 @@ function enumerateCombos(items, slots, ctx, maxCombos) {
   const fragBase = new Float64Array(nStats);
   const fragNonBase = new Float64Array(nStats);
   const chosen = [];
+  const chosenItems = [];
   const record = () => {
     combos.push({ ids: chosen.slice(), score: scoreOf(ctx, fragBase, fragNonBase) });
   };
@@ -475,13 +508,16 @@ function enumerateCombos(items, slots, ctx, maxCombos) {
     if (remaining === 0) return;
     for (let i = idx; i < items.length; i++) {
       const item = items[i];
+      if (conflictsWithChosen(item, chosenItems)) continue; // 覚醒前後の同一種は排他
       for (let j = 0; j < nStats; j++) {
         fragBase[j] += item.base[j];
         fragNonBase[j] += item.nonBase[j];
       }
       chosen.push(item.id);
+      chosenItems.push(item);
       dfs(i + 1, remaining - 1);
       chosen.pop();
+      chosenItems.pop();
       for (let j = 0; j < nStats; j++) {
         fragBase[j] -= item.base[j];
         fragNonBase[j] -= item.nonBase[j];
@@ -514,7 +550,7 @@ export function bestForCharacter(p) {
   }
   const candidates = equippableFragments(p.member.character, p.fragmentsById);
   const stars = p.member.my?.stars ?? 7;
-  const prepared = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings);
+  const prepared = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings, p.avoidUnmetCond === true);
   const { items, truncated } = limitItems(prepared, ctx);
   if (truncated) warnings.messages.push('候補が多いため単体スコア上位に絞って探索しました（厳密解でない可能性があります）');
   const slots = Number(p.member.my && p.member.my.equip_slots) || 3;
@@ -567,7 +603,7 @@ export function optimizeParty(p) {
       const candidates = equippableFragments(member.character, p.fragmentsById);
       const stars = member.my?.stars ?? 7;
       const context = p.contexts ? p.contexts[cid] : undefined;
-      items = prepareItems(candidates, p.counts, p.effectMap, wStats, stars, context, p.includeTournament === true, warnings);
+      items = prepareItems(candidates, p.counts, p.effectMap, wStats, stars, context, p.includeTournament === true, warnings, p.avoidUnmetCond === true);
       if (p.itemsCache) p.itemsCache[cid] = items;
     }
     const slots = Number(member.my && member.my.equip_slots) || 3;

@@ -7,7 +7,7 @@ import { sumFragmentEffects, fragmentStatEffects, lookupEffectName, conditionMat
 import {
   optimizeParty, partyAbilityCorrections, canEquip, characterDetail,
   statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
-  pickZenkaiMembers, bestForCharacter,
+  pickZenkaiMembers, bestForCharacter, fragsConflict,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -27,6 +27,7 @@ const ui = {
     optimizeLeader: true,
     autoZenkai: true, // 最適化時にゼンカイ枠（下段3枠）を所持キャラから自動選出する
     styleSplit: true, // 打撃/射撃タイプのキャラは自分のタイプに合わせた重みで組む
+    avoidUnmetCond: true, // 効果条件を満たせないフラグメントは候補から外す
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
   fragFilter: { q: '', rarity: '', ownedOnly: false },
@@ -166,6 +167,8 @@ const PRESETS = {
   strike_pure: { label: '完全打撃特化', weights: { strike_atk: 1 } },
   strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, hp: 0.5, strike_def: 0.35, blast_def: 0.35, blast_atk: 0.15, critical: 0.1, ki_recovery: 0.05 } },
   balance: { label: '総合バランス', weights: { hp: 0.6, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.5, blast_def: 0.5, critical: 0.2, ki_recovery: 0.1 } },
+  // 全ステータスの合計値（❸の総和）が最も高くなる配分。体力の絶対値が大きいため体力寄りになる
+  total: { label: '総合ステータス最大（全ステ合計）', weights: Object.fromEntries(STATS.map((s) => [s, 1])) },
   blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, hp: 0.5, strike_def: 0.35, blast_def: 0.35, strike_atk: 0.15, critical: 0.1, ki_recovery: 0.05 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
   defense: { label: '耐久特化', weights: { hp: 1, strike_def: 0.7, blast_def: 0.7 } },
@@ -565,10 +568,24 @@ function renderParty() {
         el('div', { class: 'm-name' }, m.character.name,
           (m.character.ultra_ability || []).length ? el('span', { class: 'ultra-badge', style: 'margin-left:4px' }, 'ULTRA') : null,
           memberBadge(cid)),
-        el('div', { class: 'm-sub', style: 'display:flex;align-items:center;gap:6px' },
+        el('div', { class: 'm-sub', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap' },
           m.character.card_no,
           el('span', {}, starsSelectCompact(cid, m.my)),
-          `Zアビ${['I', 'II', 'III', 'IV'][((m.my.z_level && m.my.z_level !== 'auto') ? m.my.z_level : autoAbilityLevel(m.my.stars)) - 1] || '—'}`),
+          `Zアビ${['I', 'II', 'III', 'IV'][((m.my.z_level && m.my.z_level !== 'auto') ? m.my.z_level : autoAbilityLevel(m.my.stars)) - 1] || '—'}`,
+          // キャラ個別の特化指定（自動=タイプ/パーティ目標に従う）
+          el('select', {
+            style: 'width:auto;display:inline-block;padding:1px 4px;margin:0;font-size:11px',
+            onchange: async (e) => {
+              ensureCharMy(cid).objective = e.target.value;
+              await persistMy();
+              renderParty();
+            },
+          },
+            [['auto', '特化:自動'], ['party', '特化:パーティ目標'],
+              ...Object.entries(PRESETS).map(([k, p]) => [k, `特化:${p.label}`])]
+              .map(([v, label]) => el('option', {
+                value: v, selected: (charMy(cid)?.objective || 'auto') === v,
+              }, label)))),
         el('div', { class: 'frag-slots' },
           equips.map((fid, idx) => {
             const f = fid ? fragDef(fid) : null;
@@ -694,6 +711,11 @@ function renderOptimizerPanel() {
         type: 'checkbox', checked: m.styleSplit !== false,
         onchange: (e) => { m.styleSplit = e.target.checked; },
       }), 'キャラのタイプに合わせて特化（射撃特化パでも打撃タイプは打撃で組む。逆転時は通知）'),
+    el('label', { class: 'check' },
+      el('input', {
+        type: 'checkbox', checked: m.avoidUnmetCond !== false,
+        onchange: (e) => { m.avoidUnmetCond = e.target.checked; },
+      }), '効果条件を満たせないフラグは選ばない（⚠条件未達の装備を避ける。数値優先ならオフ）'),
     el('button', { class: 'btn', onclick: runOptimize }, '最適化を実行'),
     el('p', { class: 'small-note' },
       '同一フラグメントは同じキャラに重複装備できません（別キャラは所持数の範囲で同時装備可）。' +
@@ -951,20 +973,26 @@ async function runOptimize() {
   const styleOverridesFor = (memList) => {
     const wById = {};
     const swapped = []; // {cid, ownStat, partyStat}
-    if (ui.opt.styleSplit !== false && baseFocus) {
-      for (const m of memList) {
-        const tags = m.character.tags || [];
-        const swap = (baseFocus === 'blast' && tags.includes(13002)) // 打撃タイプ
-          || (baseFocus === 'strike' && tags.includes(13003));       // 射撃タイプ
-        if (swap) {
-          const cid = String(m.character.id);
-          wById[cid] = swapAtkWeights(weights);
-          swapped.push({
-            cid,
-            ownStat: baseFocus === 'blast' ? 'strike_atk' : 'blast_atk',
-            partyStat: baseFocus === 'blast' ? 'blast_atk' : 'strike_atk',
-          });
-        }
+    for (const m of memList) {
+      const cid = String(m.character.id);
+      // キャラ個別の特化指定（メンバーカードのセレクタ）が最優先。
+      // 'party' はパーティ目標のまま（タイプ自動入替もしない）、プリセット名なら固定の重みで組む
+      const obj = charMy(cid)?.objective;
+      if (obj && obj !== 'auto') {
+        if (obj !== 'party' && PRESETS[obj]) wById[cid] = { ...PRESETS[obj].weights };
+        continue;
+      }
+      if (ui.opt.styleSplit === false || !baseFocus) continue;
+      const tags = m.character.tags || [];
+      const swap = (baseFocus === 'blast' && tags.includes(13002)) // 打撃タイプ
+        || (baseFocus === 'strike' && tags.includes(13003));       // 射撃タイプ
+      if (swap) {
+        wById[cid] = swapAtkWeights(weights);
+        swapped.push({
+          cid,
+          ownStat: baseFocus === 'blast' ? 'strike_atk' : 'blast_atk',
+          partyStat: baseFocus === 'blast' ? 'blast_atk' : 'strike_atk',
+        });
       }
     }
     return { wById, swapped };
@@ -975,6 +1003,7 @@ async function runOptimize() {
     fragmentsById: state.game.fragments, counts,
     weights, effectMap: state.game.effectMap,
     targets: proud ? 'all' : ui.opt.targets,
+    avoidUnmetCond: ui.opt.avoidUnmetCond !== false,
   };
   const currentLeaders = proud
     ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null]
@@ -1149,6 +1178,7 @@ async function runOptimize() {
         member: m, ext: result.ext[sw.cid], weights,
         fragmentsById: state.game.fragments, counts,
         effectMap: state.game.effectMap, context: ctxOf,
+        avoidUnmetCond: ui.opt.avoidUnmetCond !== false,
       });
       const altV = detail(alt.ids || []).stats[sw.partyStat]?.final || 0;
       if (altV > own * 1.001) {
@@ -1304,11 +1334,17 @@ function openFragPicker(cid, slotIdx) {
       const isCurrent = String(current[slotIdx] || '') === sid;
       // 同一フラグメントは同じキャラに重複装備できない（実機仕様）
       const dupInChar = memberEquips(cid).some((x, i) => i !== slotIdx && String(x || '') === sid);
+      // 覚醒前と覚醒後の同一種も同じキャラに同時装備できない（実機仕様）
+      const conflictInChar = memberEquips(cid).some((x, i) => {
+        if (i === slotIdx || !x) return false;
+        const other = fragDef(x);
+        return other && fragsConflict(other, f);
+      });
       const noneLeft = usedElsewhere >= count;
       return fragTile(f, {
         exclude: { cid, idx: slotIdx },
         showRemaining: true,
-        disabled: dupInChar || (noneLeft && !isCurrent),
+        disabled: dupInChar || conflictInChar || (noneLeft && !isCurrent),
         onclick: async () => {
           if (isCurrent) { await assign(null); return; } // タップで外す
           await assign(sid);

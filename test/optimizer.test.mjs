@@ -470,3 +470,49 @@ test('optimizeParty: weightsById でキャラごとに別の重みで組める�
   assert.deepEqual(r.assignments['1'].ids, ['901'], 'キャラ1はパーティ目標(射撃)で組む');
   assert.deepEqual(r.assignments['2'].ids, ['900'], 'キャラ2は上書き重み(打撃)で組む');
 });
+
+test('覚醒前後の同一種フラグは同じキャラに同時装備できない', async () => {
+  const { fragSpecies, fragsConflict } = await import('../js/optimizer.js');
+  const base = { ...frag(100, [{ stat: 'strike_atk', base: true, value: 20 }]), icon: '/assets/equips/EqIco_100.webp', rarity: 'gold' };
+  const awak = { ...frag(50100, [{ stat: 'strike_atk', base: true, value: 25 }]), icon: '/assets/equips/EqIco_100.webp', rarity: 'awakenedgold' };
+  const other = { ...frag(200, [{ stat: 'strike_atk', base: true, value: 5 }]), icon: '/assets/equips/EqIco_200.webp', rarity: 'gold' };
+  assert.equal(fragSpecies(base), '100');
+  assert.equal(fragSpecies(awak), '100');
+  assert.equal(fragsConflict(base, awak), true);
+  assert.equal(fragsConflict(base, other), false);
+  const member = { character: charaV1(1, []), my: myOf(2) }; // 2枠
+  const r = bestForCharacter({
+    member, fragmentsById: { 100: base, 50100: awak, 200: other },
+    counts: { 100: 6, 50100: 6, 200: 6 },
+    weights: { strike_atk: 1 }, effectMap,
+  });
+  // ベース+覚醒(20+25)は選べない → 覚醒25 + 別種5 が最適
+  assert.deepEqual([...r.ids].sort(), ['200', '50100']);
+});
+
+test('力の大会版と通常版（どちらも非覚醒・同一種）は排他にならない', async () => {
+  const { fragsConflict } = await import('../js/optimizer.js');
+  const base = { id: 100, icon: '/assets/equips/EqIco_100.webp', rarity: 'gold' };
+  const top = { id: 70100, icon: '/assets/equips/EqIco_100.webp', rarity: 'gold', top: true };
+  assert.equal(fragsConflict(base, top), false, '覚醒/非覚醒の違いが無ければ共存できる');
+});
+
+test('avoidUnmetCond: 条件未達の効果を持つフラグは候補から除外できる', () => {
+  const condFrag = {
+    id: 300, name: '条件付き', rarity: 'gold', equip_conditions: {},
+    slots: [
+      { label: 'SLOT 1', star7: false, lines: [{ text: '基礎打撃攻撃力', value: 30 }] },
+      { label: 'SLOT 2', star7: false, lines: [{ text: '打撃攻撃力', value: 10, cond: [[{ tag: 777 }]], cond_count: 1, cond_exclude_self: false, cond_scope: 'battle', cond_raw: '' }] },
+    ],
+  };
+  const plain = frag(301, [{ stat: 'strike_atk', base: true, value: 8 }]);
+  const member = { character: charaV2(1, [7]), my: myOf(1) };
+  const context = { selfId: 1, self: { id: 1, tags: [7] }, members: [{ id: 1, tags: [7] }] }; // タグ777は誰も持たない
+  const pick = (avoid) => bestForCharacter({
+    member, fragmentsById: { 300: condFrag, 301: plain },
+    counts: { 300: 6, 301: 6 }, weights: { strike_atk: 1 },
+    effectMap, context, avoidUnmetCond: avoid,
+  }).ids;
+  assert.deepEqual(pick(true), ['301'], '未達条件持ちの300を避けて301を選ぶ');
+  assert.deepEqual(pick(false), ['300'], '許可すれば無条件分(+30)の高い300を選ぶ');
+});
