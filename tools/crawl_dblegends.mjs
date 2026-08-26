@@ -366,8 +366,10 @@ export function parseEquipPage(html, id) {
     const star7 = cls.includes('s4') || effLines.flat().some((l) => l.includes('【★7で解放】'));
     let lines;
     if (isOption) {
-      // 選択式効果はどれが付くか不定のため計算対象にせず、原文のまま表示用に保存する
-      lines = effLines.flatMap((ls, i) => ls.map((l) => ({ raw: `【選択${i + 1}】${l}` })));
+      // 選択式効果（Option 1 of N / — OR — 区切り）。ゲームでは所持個体ごとにどれか1つが付く。
+      // クロール時は原文＋選択肢番号で保存し、マージ時にタグ表で選択肢ごとに解析する
+      // （計算側は「条件を満たす選択肢のうち最良の1つ」を適用する）
+      lines = effLines.flatMap((ls, i) => ls.map((l) => ({ raw: l, option: i + 1 })));
     } else {
       lines = effLines.flat()
         .filter((l) => !l.includes('【★7で解放】'))
@@ -658,6 +660,39 @@ async function merge() {
     for (const slot of e.slots || []) {
       const lines = slot.lines || [];
       if (lines.length === 0 || !lines.some((l) => l.raw != null)) continue;
+      // 選択式スロット（option 番号付き / 旧形式の【選択N】プレフィックス）:
+      // 選択肢ごとに条件付きスロットとして解析する。素の効果行の選択肢は classifyLine で解析
+      const optOf = (l) => {
+        if (l.option != null) return { opt: l.option, raw: l.raw };
+        const m = l.raw != null && String(l.raw).match(/^【選択(\d+)】(.*)$/);
+        return m ? { opt: Number(m[1]), raw: m[2] } : null;
+      };
+      if (lines.some((l) => optOf(l))) {
+        const byOpt = new Map();
+        const passthrough = [];
+        for (const l of lines) {
+          const o = optOf(l);
+          if (o && l.raw != null) {
+            if (!byOpt.has(o.opt)) byOpt.set(o.opt, []);
+            byOpt.get(o.opt).push(o.raw);
+          } else {
+            passthrough.push(l); // 解析済み行はそのまま
+          }
+        }
+        const out2 = [...passthrough];
+        for (const [opt, raws] of [...byOpt.entries()].sort((a, b) => a[0] - b[0])) {
+          const parsed = parseConditionalSlot(raws, tagNameToId);
+          if (parsed) { out2.push(...parsed.map((p) => ({ ...p, option: opt }))); continue; }
+          const classified = raws.map(classifyLine);
+          if (classified.every((c) => c && c.raw == null)) {
+            out2.push(...classified.map((p) => ({ ...p, option: opt })));
+            continue;
+          }
+          out2.push(...raws.map((raw) => ({ raw, option: opt })));
+        }
+        slot.lines = out2;
+        continue;
+      }
       const out = [];
       let i = 0;
       while (i < lines.length) {
@@ -682,6 +717,18 @@ async function merge() {
     // サイトに構造化マーカーが無いため名前の接頭辞で判定し、データ側にフラグを持たせる
     if (String(e.name || '').startsWith('【力の大会】')) e.top = true;
     fragmentsOut[id] = e;
+  }
+
+  // キャラページ側の装備リスト（equip_ids）から、フラグメント側の装備可能キャラ一覧を補完する。
+  // --update ではキャラページだけが再取得され既存の装備ページは再取得されないため、
+  // 新キャラが既存フラグの equip_char_ids に載らず「ほぼ何も装備できない」状態になる。
+  // 装備可否は双方向の和で決める（equip_char_ids が空 = 全キャラ可 のフラグはそのまま）
+  for (const ch of Object.values(charactersOut)) {
+    for (const eqId of ch.equip_ids || []) {
+      const f = fragmentsOut[String(eqId)];
+      if (!f || !Array.isArray(f.equip_char_ids) || f.equip_char_ids.length === 0) continue;
+      if (!f.equip_char_ids.includes(ch.id)) f.equip_char_ids.push(ch.id);
+    }
   }
 
   // 効果行レポート（effect_map 整備用）

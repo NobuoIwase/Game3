@@ -194,26 +194,53 @@ export function fragmentStatEffects(fragment, effectMap, opts = {}) {
       });
     }
   };
+  // 条件・人数比例を評価した実効倍率（0 = 未達）
+  const multOf = (line) => {
+    if (!line.cond) return 1;
+    const n = fragmentConditionCount(line, opts.context);
+    return line.cond_per_member
+      ? (n || 0)
+      : ((n != null && n >= (line.cond_count || 1)) ? 1 : 0);
+  };
+  const applyLine = (line) => {
+    if (line.raw != null) return; // アビリティ文（%値を持たない行）は計算対象外
+    const mult = multOf(line);
+    if (mult <= 0) {
+      conditionalOff.push({ text: line.text, value: line.value, cond_raw: line.cond_raw, option: line.option });
+      return;
+    }
+    push(line.cond ? { text: line.text, value: line.value * mult } : line);
+  };
   if (Array.isArray(fragment.slots)) {
     for (const slot of fragment.slots) {
       if (slot.star7 && stars < 7) continue;
-      for (const line of slot.lines || []) {
-        if (line.raw != null) continue; // アビリティ文（%値を持たない行）は計算対象外
-        if (line.cond) {
-          const n = fragmentConditionCount(line, opts.context);
-          // 人数比例（1人につき〜ずつ）は該当人数を掛ける。通常条件は成立時に1倍
-          const mult = line.cond_per_member
-            ? (n || 0)
-            : ((n != null && n >= (line.cond_count || 1)) ? 1 : 0);
-          if (mult <= 0) {
-            conditionalOff.push({ text: line.text, value: line.value, cond_raw: line.cond_raw });
-            continue;
-          }
-          push({ text: line.text, value: line.value * mult });
-          continue;
+      const lines = slot.lines || [];
+      const optLines = lines.filter((l) => l.option != null && l.raw == null);
+      if (optLines.length > 0) {
+        // 選択式スロット: 所持個体にはどれか1つが付く。
+        // 「条件を満たす選択肢のうち実効値合計が最大の1つ」を選んで適用する
+        // （所持品は最良個体という §3-4 の前提に合わせる）。どれも未達なら未発動として表示
+        const byOpt = new Map();
+        for (const l of optLines) {
+          if (!byOpt.has(l.option)) byOpt.set(l.option, []);
+          byOpt.get(l.option).push(l);
         }
-        push(line);
+        let best = null;
+        for (const [opt, ols] of byOpt) {
+          const total = ols.reduce((acc, l) => acc + (Number(l.value) || 0) * multOf(l), 0);
+          if (total > 0 && (!best || total > best.total)) best = { opt, ols, total };
+        }
+        if (best) {
+          for (const l of best.ols) applyLine(l);
+        } else {
+          for (const l of optLines) {
+            conditionalOff.push({ text: l.text, value: l.value, cond_raw: l.cond_raw || '選択式', option: l.option });
+          }
+        }
+        for (const l of lines.filter((x) => x.option == null)) applyLine(l);
+        continue;
       }
+      for (const line of lines) applyLine(line);
     }
   } else {
     for (const entry of fragment.effects || []) push(entry);

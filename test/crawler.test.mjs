@@ -197,3 +197,20 @@ test('parseAbilityText: 「&」連結の後続節は直前の節の条件を引�
   assert.equal(g2[0].effects.length, 2);
   assert.equal(g2[0].cond.length, 0);
 });
+
+test('parseEquipPage: 選択式スロット（eqd-option）を option 番号付きの raw 行で保存する', async () => {
+  const { parseEquipPage } = await import('../tools/crawl_dblegends.mjs');
+  const html = `
+<div class="eqd-name">テスト装備</div>
+<div class="eqx-frame gold"></div>
+<div class="eqd-detail">ゴールドのフラグメント</div>
+<img class="eqx-art" src="/assets/equips/EqIco_9999.webp">
+<div class="eqd-slot"><div class="eqd-slot-label">SLOT 1</div><div class="eqd-eff">基礎体力 <span>5.00%</span> ~ <span>12.00</span>%</div></div>
+<div class="eqd-slot"><div class="eqd-slot-label">SLOT 2</div><div class="eqd-option"><div class="eqd-otag">Option 1 of 2</div><div class="eqd-eff">バトルメンバーに「タグ：神の気」がいると、<br />自身の射撃攻撃力を5.00% ~ 15.00%アップ</div></div><div class="eqd-orsep">— OR —</div><div class="eqd-option"><div class="eqd-otag">Option 2 of 2</div><div class="eqd-eff">バトルメンバーに「タグ：サイヤ人」がいると、<br />自身の打撃攻撃力を5.00% ~ 15.00%アップ</div></div></div>`;
+  const r = parseEquipPage(html, 9999);
+  assert.equal(r.slots.length, 2);
+  assert.equal(r.slots[1].label, 'SLOT 2');
+  const opts = r.slots[1].lines.map((l) => l.option);
+  assert.deepEqual([...new Set(opts)], [1, 2], '選択肢1と2が保存される');
+  assert.ok(r.slots[1].lines.every((l) => l.raw != null), 'クロール時は raw 保存');
+});

@@ -27,7 +27,9 @@ const ui = {
     optimizeLeader: true,
     autoZenkai: true, // 最適化時にゼンカイ枠（下段3枠）を所持キャラから自動選出する
     styleSplit: true, // 打撃/射撃タイプのキャラは自分のタイプに合わせた重みで組む
-    avoidUnmetCond: true, // 効果条件を満たせないフラグメントは候補から外す
+    // 条件未達の効果を持つフラグを丸ごと除外するか。既定OFF: 除外すると強フラグまで
+    // 候補から消えて弱い装備になりがち（未達の効果はもともと0価値で公平に評価される）
+    excludeUnmetCond: false,
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
   fragFilter: { q: '', rarity: '', ownedOnly: false },
@@ -717,9 +719,9 @@ function renderOptimizerPanel() {
       }), 'キャラのタイプに合わせて特化（射撃特化パでも打撃タイプは打撃で組む。逆転時は通知）'),
     el('label', { class: 'check' },
       el('input', {
-        type: 'checkbox', checked: m.avoidUnmetCond !== false,
-        onchange: (e) => { m.avoidUnmetCond = e.target.checked; },
-      }), '効果条件を満たせないフラグは選ばない（⚠条件未達の装備を避ける。数値優先ならオフ）'),
+        type: 'checkbox', checked: m.excludeUnmetCond === true,
+        onchange: (e) => { m.excludeUnmetCond = e.target.checked; },
+      }), '条件未達の効果を持つフラグを完全に除外する（⚠を無くしたい場合のみ。強フラグまで候補から消えて結果が弱くなることがあります）'),
     el('button', { class: 'btn', onclick: runOptimize }, '最適化を実行'),
     el('p', { class: 'small-note' },
       '同一フラグメントは同じキャラに重複装備できません（別キャラは所持数の範囲で同時装備可）。' +
@@ -1007,7 +1009,7 @@ async function runOptimize() {
     fragmentsById: state.game.fragments, counts,
     weights, effectMap: state.game.effectMap,
     targets: proud ? 'all' : ui.opt.targets,
-    avoidUnmetCond: ui.opt.avoidUnmetCond !== false,
+    avoidUnmetCond: ui.opt.excludeUnmetCond === true,
   };
   const currentLeaders = proud
     ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null]
@@ -1182,7 +1184,7 @@ async function runOptimize() {
         member: m, ext: result.ext[sw.cid], weights,
         fragmentsById: state.game.fragments, counts,
         effectMap: state.game.effectMap, context: ctxOf,
-        avoidUnmetCond: ui.opt.avoidUnmetCond !== false,
+        avoidUnmetCond: ui.opt.excludeUnmetCond === true,
       });
       const altV = detail(alt.ids || []).stats[sw.partyStat]?.final || 0;
       if (altV > own * 1.001) {
@@ -1289,14 +1291,21 @@ function fragSlotEffectsView(f, stars) {
     el('div', { class: 'slot-eff' },
       el('div', { class: 'sl' }, slot.label, slot.star7 ? `（★7で解放${stars < 7 ? '・現在の星では無効' : ''}）` : ''),
       (slot.lines || []).map((line) => {
-        if (line.raw != null) return el('div', { class: 'line raw' }, line.raw);
+        // 選択式スロット: どれか1つが付く。条件を満たす選択肢のうち最良の1つが計算に入る
+        const optPrefix = line.option != null
+          ? el('span', { style: 'color:var(--warn);font-weight:700' }, `【選択${line.option}】`)
+          : null;
+        if (line.raw != null) return el('div', { class: 'line raw' }, ...nodes(optPrefix, line.raw));
         const valueText = `${line.text} +${line.value}%${line.value_min != null ? `（最大値。${line.value_min}〜${line.value}%）` : ''}`;
         if (line.cond) {
-          return el('div', { class: 'line' },
+          return el('div', { class: 'line' }, ...nodes(
+            optPrefix,
             el('span', { style: 'color:var(--accent2)' }, `【条件】${line.cond_raw || ''} `), valueText,
-            el('span', { class: 'raw' }, '（編成が条件を満たすときだけ計算に含まれます）'));
+            el('span', { class: 'raw' }, line.option != null
+              ? '（選択式: 条件を満たす選択肢のうち最良の1つを適用）'
+              : '（編成が条件を満たすときだけ計算に含まれます）')));
         }
-        return el('div', { class: 'line' }, valueText);
+        return el('div', { class: 'line' }, ...nodes(optPrefix, valueText));
       })));
 }
 

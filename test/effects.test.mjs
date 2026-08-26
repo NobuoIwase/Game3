@@ -199,3 +199,26 @@ test('fragmentStatEffects: cond_scope=self は装備キャラ自身のタグで�
   assert.equal(off.effects.length, 0);
   assert.equal(off.conditionalOff.length, 1);
 });
+
+test('選択式スロット: 条件を満たす選択肢のうち実効値最大の1つだけを適用する', async () => {
+  const { fragmentStatEffects } = await import('../js/effects.js');
+  const map = { entries: {
+    '打撃攻撃力': { stat: 'strike_atk', base: false },
+    '射撃攻撃力': { stat: 'blast_atk', base: false },
+  } };
+  const mkFrag = () => ({ slots: [{ label: 'SLOT 2', star7: false, lines: [
+    { text: '射撃攻撃力', value: 15, cond: [[{ tag: 40 }]], cond_count: 1, cond_exclude_self: false, cond_scope: 'battle', cond_raw: '', option: 1 },
+    { text: '打撃攻撃力', value: 15, cond: [[{ tag: 7 }]], cond_count: 1, cond_exclude_self: false, cond_scope: 'battle', cond_raw: '', option: 2 },
+  ] }] });
+  const ctx = (tags) => ({ selfId: 1, self: { id: 1, tags }, members: [{ id: 1, tags }] });
+  // 選択肢2の条件(タグ7)だけ成立 → 打撃+15のみ適用
+  const r1 = fragmentStatEffects(mkFrag(), map, { stars: 7, context: ctx([7]) });
+  assert.deepEqual(r1.effects.map((e) => e.stat + '+' + e.value), ['strike_atk+15']);
+  // 両方成立 → 同値なのでどちらか1つだけ（2つは適用されない）
+  const r2 = fragmentStatEffects(mkFrag(), map, { stars: 7, context: ctx([7, 40]) });
+  assert.equal(r2.effects.length, 1, '選択式は1つだけ');
+  // どちらも未達 → 効果ゼロ・未発動として記録
+  const r3 = fragmentStatEffects(mkFrag(), map, { stars: 7, context: ctx([99]) });
+  assert.equal(r3.effects.length, 0);
+  assert.equal(r3.conditionalOff.length, 2);
+});
