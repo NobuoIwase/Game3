@@ -575,8 +575,13 @@ async function merge() {
   const equips = await readCache(join(CRAWL, 'equip'));
   const listMeta = JSON.parse(await readFile(join(CRAWL, 'list.json'), 'utf8'));
 
-  // tags.json: 一覧の filterTAGS ＋ 各キャラページの tr を統合
-  const tags = { ...listMeta.tags };
+  // tags.json: 既存の tags.json ＋ 一覧の filterTAGS ＋ 各キャラページの tr を統合。
+  // --update（キャッシュを公開データからシードした環境）ではキャラページ由来の tr が
+  // 無いため、既存の tags.json を土台にしないと特殊タグ（特殊カバチェン等）が失われる
+  let tags = {};
+  try { tags = JSON.parse(await readFile(join(ROOT, 'game_data', 'tags.json'), 'utf8')); }
+  catch { /* 初回は存在しない */ }
+  Object.assign(tags, listMeta.tags);
   for (const c of Object.values(chars)) {
     for (const [tid, arr] of Object.entries(c.tag_names || {})) {
       if (!tags[tid] && arr[0]) tags[tid] = arr[0];
