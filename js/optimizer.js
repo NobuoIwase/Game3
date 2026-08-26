@@ -257,30 +257,40 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
  */
 export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsById, effectMap, leaderId }) {
   if (!battleMembers || battleMembers.length === 0) return [];
-  const bIds = battleMembers.map((m) => m.character.id);
-  const score = (ext) => {
-    let t = 0;
-    for (const m of battleMembers) {
-      const e = ext[String(m.character.id)];
-      if (!e) continue;
-      const wm = (weightsById && weightsById[String(m.character.id)]) || weights;
-      for (const s of STATS) {
-        const w = wm[s] || 0;
-        if (!w) continue;
-        const sb = statBase(m.character, m.my, s);
-        if (!sb || sb.base <= 0) continue;
-        const corr = (e.z[s] || 0) + (e.zenkai[s] || 0) + (e.ll[s] || 0);
-        const nb = (e.extNonBase && e.extNonBase[s]) || 0; // 手入力の基礎なし補正（乗算）
-        t += w * sb.base * (((corr * 0.01 + 1) * (nb * 0.01 + 1)) - 1);
-      }
-    }
-    return t;
-  };
-  const baseline = score(abilityCorrections(battleMembers, bIds, effectMap, { leaderId }));
+  const leader = leaderId != null && leaderId !== '' ? String(leaderId) : null;
+  // 候補はベンチ（非出撃）なので、候補の Z/ZENKAI アビがバトル3体の補正を
+  // どれだけ増やすかだけを直接計算する（バトル3体自身の補正は候補間で一定なので不要）。
+  // 全キャラを候補にしても高速に済むよう、abilityCorrections の全再計算は行わない
   const scored = [];
   for (const c of candidates) {
-    const ext = abilityCorrections([...battleMembers, c], bIds, effectMap, { leaderId });
-    const delta = score(ext) - baseline;
+    const ab = memberAbilityGroups({ ...c, effectMap });
+    let delta = 0;
+    for (const m of battleMembers) {
+      const mid = String(m.character.id);
+      const wm = (weightsById && weightsById[mid]) || weights;
+      const corr = {};
+      const nonBase = {};
+      const add = (effects) => {
+        for (const e of effects) {
+          if (e.base === false) nonBase[e.stat] = (nonBase[e.stat] || 0) + e.value;
+          else corr[e.stat] = (corr[e.stat] || 0) + e.value;
+        }
+      };
+      for (const g of ab.z) {
+        // リーダーは他キャラのZアビをタグ無視で受ける（§12-3）
+        if (conditionMatches(g.cond, m.character) || (leader && mid === leader)) add(g.effects);
+      }
+      for (const g of ab.zenkai) {
+        if (conditionMatches(g.cond, m.character)) add(g.effects);
+      }
+      for (const s of STATS) {
+        const w = wm[s] || 0;
+        if (!w || (!(corr[s] > 0) && !(nonBase[s] > 0))) continue;
+        const sb = statBase(m.character, m.my, s);
+        if (!sb || sb.base <= 0) continue;
+        delta += w * sb.base * ((((corr[s] || 0) * 0.01 + 1) * ((nonBase[s] || 0) * 0.01 + 1)) - 1);
+      }
+    }
     if (delta > 1e-9) scored.push({ id: c.character.id, delta });
   }
   scored.sort((a, b) => b.delta - a.delta);

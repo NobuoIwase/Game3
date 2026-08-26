@@ -138,7 +138,16 @@ export function resolveEffect(entry, effectMap) {
  */
 /** 条件に一致するバトルメンバー数を数える。文脈が無ければ null */
 export function fragmentConditionCount(line, context) {
-  if (!context || !Array.isArray(context.members)) return null;
+  if (!context) return null;
+  // cond_scope 'self': 装備キャラ自身のタグ等で判定する静的条件（「自身が「…」の場合」）
+  if (line.cond_scope === 'self') {
+    const self = context.self
+      || (Array.isArray(context.members)
+        && context.members.find((m) => String(m.id) === String(context.selfId)));
+    if (!self) return null;
+    return conditionMatches(line.cond, self) ? 1 : 0;
+  }
+  if (!Array.isArray(context.members)) return null;
   let n = 0;
   for (const m of context.members) {
     if (line.cond_exclude_self && String(m.id) === String(context.selfId)) continue;

@@ -155,3 +155,31 @@ test('parseAbilityText: 未知のICN行はアイコン付き原文でunresolved�
   assert.equal(g[0].cond.length, 0);
   assert.ok(g[0].unresolved.some((u) => u.includes('{{ICN:')), 'ICNトークンが残る');
 });
+
+test('parseConditionalSlot: 自身が「…」の場合（装備キャラ自身の静的条件）', async () => {
+  const { parseConditionalSlot } = await import('../tools/crawl_dblegends.mjs');
+  const T = { '打撃タイプ': 13002 };
+  const r = parseConditionalSlot([
+    '自身が「バトルスタイル：打撃タイプ」の場合、',
+    '自身の打撃攻撃力を8.00% ~ 15.00%アップ',
+  ], T);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].cond_scope, 'self');
+  assert.equal(r[0].value, 15);
+  assert.equal(r[0].value_min, 8);
+  assert.deepEqual(r[0].cond, [[{ tag: 13002, name: '打撃タイプ' }]]);
+});
+
+test('parseConditionHeader: 見出し1行から条件メタを解析（3形式）', async () => {
+  const { parseConditionHeader } = await import('../tools/crawl_dblegends.mjs');
+  const T = { '悪の系譜': 42, '未来': 26 };
+  const self = parseConditionHeader('自身が「タグ：悪の系譜」の場合、', T);
+  assert.equal(self.cond_scope, 'self');
+  assert.deepEqual(self.cond, [[{ tag: 42, name: '悪の系譜' }]]);
+  const battle = parseConditionHeader('バトルメンバーに「タグ：未来」が2人以上いると、', T);
+  assert.equal(battle.cond_scope, 'battle');
+  assert.equal(battle.cond_count, 2);
+  const per = parseConditionHeader('バトルメンバーの「タグ：未来」1人につき、', T);
+  assert.equal(per.cond_per_member, true);
+  assert.equal(parseConditionHeader('場に出た時、体力を回復', T), null, 'アビリティ文は対象外');
+});

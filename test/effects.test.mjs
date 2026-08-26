@@ -182,3 +182,20 @@ test('resolveAbilityGroups: ICN形式の未解析条件行もフェイルセー�
   assert.equal(conditionMatches(r.groups[0].cond, { tags: [1, 2, 3], element: 'RED' }), false);
   assert.ok(r.unknown.some((u) => u.includes('条件行が未解析')));
 });
+
+test('fragmentStatEffects: cond_scope=self は装備キャラ自身のタグで判定する', async () => {
+  const { fragmentStatEffects } = await import('../js/effects.js');
+  const map = { entries: { '打撃攻撃力': { stat: 'strike_atk', base: false } } };
+  const frag = { slots: [{ label: 'SLOT 1', star7: false, lines: [
+    { text: '打撃攻撃力', value: 15, value_min: 8, cond: [[{ tag: 13002 }]], cond_count: 1, cond_exclude_self: false, cond_scope: 'self', cond_raw: '自身が「バトルスタイル：打撃タイプ」の場合、' },
+  ] }] };
+  const ctxOf = (selfTags) => ({ selfId: 1, self: { id: 1, tags: selfTags, element: 'RED' }, members: [{ id: 2, tags: [13002], element: 'GRN' }] });
+  // 自身が打撃タイプ → 適用（バトルメンバーに打撃タイプがいても自身で判定）
+  const on = fragmentStatEffects(frag, map, { stars: 7, context: ctxOf([13002]) });
+  assert.equal(on.effects.length, 1);
+  assert.equal(on.effects[0].value, 15);
+  // 自身が打撃タイプでない → 未適用（メンバー2が打撃タイプでも乗らない）
+  const off = fragmentStatEffects(frag, map, { stars: 7, context: ctxOf([13003]) });
+  assert.equal(off.effects.length, 0);
+  assert.equal(off.conditionalOff.length, 1);
+});

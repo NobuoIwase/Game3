@@ -93,7 +93,7 @@ function applyCharSortFilter(defs, f) {
       case 'id': return d.id;
       case 'rarity': return RARITY_ORDER[d.rarity] || 0;
       case 'element': return ELEMENTS.indexOf(d.element);
-      case 'stars': return isOwned(d.id) ? (Number(charMy(d.id).stars) || 0) : -1;
+      case 'stars': return charMy(d.id) ? (Number(charMy(d.id).stars) || 0) : (isOwned(d.id) ? 7 : -1);
       case 'critical': return Number(d.soul_max?.critical) || 0;
       default: return Number(d.stats?.[f.sort]) || 0;
     }
@@ -263,7 +263,18 @@ function fragDef(id) { return state.game.fragments[String(id)]; }
 /** 覚醒フラグメント判定（rarity コードが awakened〜。ゲーム内では豪華枠で区別される） */
 function isAwakenedFrag(f) { return String(f?.rarity || '').startsWith('awakened'); }
 function charMy(id) { return state.my.characters[String(id)]; }
-function isOwned(id) { return !!charMy(id); }
+/**
+ * 所持判定。既定は「全キャラ所持」（own_all !== false）。
+ * 星やブーストの個別カスタマイズは charMy への登録（ensureCharMy）で行い、
+ * 未登録キャラは defaultCharMy（★7・ソウルブースト最大）として扱う。
+ */
+function isOwned(id) { return state.my.own_all !== false || !!charMy(id); }
+/** カスタマイズ保存用に my 登録を保証する（未登録なら既定値で作る） */
+function ensureCharMy(id) {
+  const cid = String(id);
+  if (!state.my.characters[cid]) state.my.characters[cid] = defaultCharMy(charDef(cid));
+  return state.my.characters[cid];
+}
 const zeroStats = () => Object.fromEntries(STATS.map((s) => [s, 0]));
 
 /** フラグメント所持数。初期値は6枚（未設定時）。タップで自由に増減できる */
@@ -328,14 +339,14 @@ function battleContexts(members) {
       const teamIds = ui.party.memberIds.slice(range[0], range[1]).filter(Boolean).map(String);
       const teamMembers = members.filter((m) => teamIds.includes(String(m.character.id)));
       for (const m of teamMembers) {
-        ctxs[String(m.character.id)] = { selfId: m.character.id, members: teamMembers.map(info) };
+        ctxs[String(m.character.id)] = { selfId: m.character.id, self: info(m), members: teamMembers.map(info) };
       }
     }
   } else {
     const bs = battleIds().map(String);
     const bm = members.filter((m) => bs.includes(String(m.character.id)));
     for (const m of members) {
-      ctxs[String(m.character.id)] = { selfId: m.character.id, members: bm.map(info) };
+      ctxs[String(m.character.id)] = { selfId: m.character.id, self: info(m), members: bm.map(info) };
     }
   }
   return ctxs;
@@ -878,7 +889,7 @@ function renderZenkaiSuggestCard() {
             onclick: async () => {
               const ids = list.map((c) => String(c.def.id));
               ids.forEach((cid, i) => {
-                if (!isOwned(cid)) state.my.characters[cid] = defaultCharMy(charDef(cid));
+                ensureCharMy(cid);
                 ui.party.memberIds[3 + i] = cid;
               });
               await persistMy();
@@ -1017,8 +1028,13 @@ async function runOptimize() {
     const def = charDef(cid);
     return def ? { character: def, my: charMy(cid) || defaultCharMy(def) } : null;
   };
+  // 全キャラ所持が標準（own_all）なら全キャラが候補。オフなら登録済みキャラのみ
   const zenkaiCandidates = autoZenkai
-    ? Object.keys(state.my.characters || {}).filter((cid) => !battleSet.has(String(cid))).map(toMember).filter(Boolean)
+    ? (state.my.own_all !== false
+        ? Object.values(state.game.characters)
+            .filter((d) => !battleSet.has(String(d.id)))
+            .map((d) => ({ character: d, my: charMy(d.id) || defaultCharMy(d) }))
+        : Object.keys(state.my.characters || {}).filter((cid) => !battleSet.has(String(cid))).map(toMember).filter(Boolean))
     : [];
 
   const computingMsg = showMsg('info', '最適化を計算中…');
@@ -1080,12 +1096,15 @@ async function runOptimize() {
   let zenkaiMsg = '';
   if (autoZenkai && best.zenkai) {
     const zIds = best.zenkai.map((z) => String(z.id));
-    for (let i = 0; i < 3; i++) ui.party.memberIds[3 + i] = zIds[i] || '';
+    for (let i = 0; i < 3; i++) {
+      ui.party.memberIds[3 + i] = zIds[i] || '';
+      if (zIds[i]) ensureCharMy(zIds[i]); // 星などを編集できるよう登録しておく
+    }
     if (zIds.length) {
       zenkaiMsg = `\nゼンカイ枠を自動選出しました: ${zIds.map((id) => charDef(id)?.name || id).join(' / ')}` +
-        (zIds.length < 3 ? `（バトル3体に恩恵のある所持キャラが ${zIds.length} 体でした）` : '');
+        (zIds.length < 3 ? `（バトル3体に恩恵のある候補が ${zIds.length} 体でした）` : '');
     } else {
-      zenkaiMsg = '\nゼンカイ枠: バトル3体にアビリティ恩恵のある所持キャラが見つかりませんでした（キャラタブで所持登録すると候補になります）。';
+      zenkaiMsg = '\nゼンカイ枠: バトル3体にアビリティ恩恵のある候補が見つかりませんでした。';
     }
   }
 
@@ -1192,9 +1211,7 @@ function openCharPicker(slotIndex) {
             const j = ui.party.memberIds.findIndex((x) => String(x) === sid);
             ui.party.memberIds[j] = ui.party.memberIds[slotIndex];
           }
-          if (!isOwned(d.id)) {
-            state.my.characters[sid] = defaultCharMy(d);
-          }
+          ensureCharMy(sid);
           ui.party.memberIds[slotIndex] = sid;
           await persistMy();
           closeSheet(); renderParty();
@@ -1348,7 +1365,7 @@ function starsSelectCompact(cid, my) {
     style: 'width:auto;display:inline-block;padding:1px 4px;margin:0;font-size:11px',
     onchange: async (e) => {
       my.stars = Number(e.target.value);
-      if (!isOwned(cid)) state.my.characters[String(cid)] = my;
+      if (!charMy(cid)) state.my.characters[String(cid)] = my;
       await persistMy();
       renderParty();
     },
@@ -1415,7 +1432,8 @@ function openCharSheet(cid) {
         el('p', { class: 'small-note' }, '登録するとブースト値はソウルブースト最大で初期化されます（下で調整可）。')));
       return;
     }
-    const m2 = charMy(cid);
+    // 全キャラ所持が標準のため、未登録キャラは編集開始時に既定値（★7・ソウルブースト最大）で登録する
+    const m2 = ensureCharMy(cid);
     ownedArea.replaceChildren(...nodes(
       el('div', { class: 'row' },
         el('label', {}, '限界突破（星）',
@@ -1473,7 +1491,12 @@ function openCharSheet(cid) {
         'リーダー枠に置く、または参照タグのキャラを編成すると強化される効果です。'),
       ...list.filter((u) => (u.text || '').trim() || (u.name || '').trim()).map((u) => el('div', { style: 'margin-bottom:8px' },
         el('div', { class: 'item-title' }, u.name),
-        el('div', { class: 'item-desc', style: 'white-space:pre-wrap' }, u.text),
+        el('div', { class: 'item-desc', style: 'white-space:pre-wrap' },
+          String(u.text || '')
+            .replace(/\{\{ICN:ChaTag\}\}/g, 'タグ:')
+            .replace(/\{\{ICN:Epi\}\}/g, 'エピソード:')
+            .replace(/\{\{ICN:UpBlue\}\}/g, 'アップ')
+            .replace(/\{\{ICN:[^}]+\}\}/g, '')),
         (u.ref_tags || []).length && battleMembers.length
           ? el('div', {}, (u.ref_tags || []).map((r) => {
               if (r.enemy) {
@@ -1782,8 +1805,27 @@ function renderData() {
             `キャラ ${meta.characters} 体（詳細 ${meta.characters_detailed}）/ フラグメント ${meta.fragments} 件 / タグ ${meta.tags} 件\n` +
             `取得日時: ${new Date(meta.generated_at).toLocaleString('ja-JP')}（取得元: ${meta.source}）`)
         : el('p', { class: 'hint' }, '取り込みメタ情報がありません。'),
+      el('button', {
+        class: 'btn',
+        onclick: () => window.open('https://github.com/NobuoIwase/Game3/actions/workflows/update-data.yml', '_blank'),
+      }, '🔄 新キャラ・新フラグを取り込む'),
       el('p', { class: 'small-note' },
-        '更新するには PC で `node tools/crawl_dblegends.mjs` を実行してコミットします（README参照）。画像は参照サイトから表示時に読み込みます。')),
+        '開いたページで（GitHubにログインした状態で）「Run workflow」を押すと、参照サイトから新しいキャラ・フラグメントだけを取得してこのアプリに反映します。' +
+        '数分待ってから下の「キャッシュを更新」を押すか、アプリを開き直すと新データが入ります。')),
+    el('div', { class: 'card' },
+      el('h3', {}, '所持設定'),
+      el('label', { class: 'check' },
+        el('input', {
+          type: 'checkbox', checked: state.my.own_all !== false,
+          onchange: async (e) => {
+            state.my.own_all = e.target.checked;
+            await persistMy(); renderChars(); renderParty();
+          },
+        }), '全キャラを所持として扱う（標準）'),
+      el('p', { class: 'small-note' },
+        'オンのとき全キャラが所持扱いになり、ゼンカイ枠の自動選出も全キャラから選びます。' +
+        '未登録キャラは ★7・ソウルブースト最大として計算します（キャラ詳細で個別に調整すると保存されます）。' +
+        'オフにすると従来どおり登録したキャラだけが所持になります。')),
     el('div', { class: 'card' },
       el('h3', {}, 'バックアップ（重要）'),
       el('p', { class: 'hint' }, '所持キャラ・所持フラグメント・編成（my_data）はこの端末のブラウザにのみ保存されます。消すと復旧できないため、定期的にエクスポートしてください。'),

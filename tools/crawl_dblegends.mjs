@@ -128,6 +128,27 @@ function parseInlineConditions(condText, tagNameToId, unresolved) {
  *   token = {tag:<id>, name} | {element:"RED"} | {name:<未解決名>}
  * @returns {Array<{cond:Array<Array<object>>, unresolved:string[], effects:Array<{text,value}>, raw:string}>}
  */
+/**
+ * ULTRAアビリティ本文から参照タグを抽出する。
+ * 「タグ：X」形式と {{ICN:ChaTag}}X / {{ICN:Epi}}X 形式の両方に対応。
+ * 「…に対する」や「敵…に」の文脈は敵対象（編成条件ではない）なので enemy フラグを付ける。
+ */
+export function extractUltraRefs(atext, tagNameToId) {
+  const refTags = [];
+  const refRe = /「(?:タグ|エピソード|キャラクター)：([^」]+)」(に対する)?|\{\{ICN:(?:ChaTag|Epi)\}\}([^\s、。（()]+)/g;
+  for (const m of String(atext || '').matchAll(refRe)) {
+    const nm = (m[1] || m[3] || '').trim();
+    if (!nm) continue;
+    const before = String(atext).slice(Math.max(0, m.index - 30), m.index);
+    const enemy = m[2] != null || /敵[^\r\n]*$/.test(before);
+    if (!refTags.some((r) => r.name === nm)) {
+      const tid = tagNameToId[nm] ?? tagNameToId[nm.normalize('NFKC')];
+      refTags.push({ name: nm, tag: tid != null ? Number(tid) : null, enemy });
+    }
+  }
+  return refTags;
+}
+
 export function parseAbilityText(text, tagNameToId) {
   const iconRe = /\{\{ICN:([^}]+)\}\}/;
   // 条件行の目印になるアイコン: タグ・属性のほか、エピソード(Epi)・キャラクター(Chara)単独の
@@ -296,16 +317,7 @@ export function parseCharacterPage(html, id) {
         .filter((aid) => aid != null && aid !== -1 && ab[String(aid)])
         .map((aid) => {
           const [name, atext] = ab[String(aid)];
-          const refTags = [];
-          // 「…に対する」が続く参照は敵対象（編成条件ではない）ので enemy フラグを付ける
-          for (const m of String(atext).matchAll(/「(?:タグ|エピソード|キャラクター)：([^」]+)」(に対する)?/g)) {
-            const nm = m[1].trim();
-            const tid = tagNameToId[nm] ?? tagNameToId[nm.normalize('NFKC')];
-            if (!refTags.some((r) => r.name === nm)) {
-              refTags.push({ name: nm, tag: tid != null ? Number(tid) : null, enemy: m[2] != null });
-            }
-          }
-          return { id: aid, name: String(name || ''), text: String(atext || ''), ref_tags: refTags };
+          return { id: aid, name: String(name || ''), text: String(atext || ''), ref_tags: extractUltraRefs(atext, tagNameToId) };
         })
         .filter((u) => u.name.trim() || u.text.trim()); // ab表の空エントリを除外
       // レベル違いの同名エントリはテーブル上重複する → 最後（最高レベル）だけ残す
@@ -433,10 +445,43 @@ export function parseEquipList(html) {
  *
  * @returns {Array|null} 解析できた場合は新しい lines 配列、できなければ null
  */
+/**
+ * 効果条件の見出し行（効果部を含まない1行）を解析して条件メタを返す。
+ * 「…がN人いると、」「…1人につき、」「自身が「…」の場合、」の3形式。
+ */
+export function parseConditionHeader(text, tagNameToId) {
+  let perMember = false;
+  let selfScope = false;
+  let m = text.match(/^(?:バトルメンバーに)?(自身以外の)?((?:「[^」]+」(?:または|かつ)?)+)が(?:(\d+)人(?:以上)?)?いると[、]?$/);
+  if (!m) {
+    const pm = text.match(/^(?:バトルメンバーの)?(自身以外の)?((?:「[^」]+」(?:または|かつ)?)+)1人につき[、]?$/);
+    if (pm) { perMember = true; m = pm; }
+  }
+  if (!m) {
+    const self = text.match(/^自身が((?:「[^」]+」(?:または|かつ)?)+)の場合[、]?$/);
+    if (self) { selfScope = true; m = [self[0], undefined, self[1], undefined]; }
+  }
+  if (!m) return null;
+  const unresolved = [];
+  const cond = parseInlineConditions(m[2], tagNameToId, unresolved);
+  if (cond.length === 0) return null;
+  const meta = {
+    cond,
+    cond_count: m[3] ? Number(m[3]) : 1,
+    cond_exclude_self: !!m[1],
+    cond_scope: selfScope ? 'self' : 'battle',
+    cond_raw: text,
+  };
+  if (perMember) meta.cond_per_member = true;
+  if (unresolved.length) meta.cond_unresolved = unresolved;
+  return meta;
+}
+
 export function parseConditionalSlot(rawLines, tagNameToId) {
   const joined = rawLines.join('');
   // 形式1: 「…が[N人[以上]]いると、〜アップ」 / 形式2: 「…1人につき、〜ずつアップ」（人数比例）
   let perMember = false;
+  let selfScope = false;
   let m = joined.match(
     /^(?:バトルメンバーに)?(自身以外の)?((?:「[^」]+」(?:または|かつ)?)+)が(?:(\d+)人(?:以上)?)?いると[、]?(.+)$/
   );
@@ -446,6 +491,11 @@ export function parseConditionalSlot(rawLines, tagNameToId) {
     );
     if (pm) { perMember = true; m = [pm[0], pm[1], pm[2], undefined, pm[3]]; }
   }
+  if (!m) {
+    // 形式3: 「自身が「バトルスタイル：打撃タイプ」の場合、〜アップ」= 装備キャラ自身の条件
+    const self = joined.match(/^自身が((?:「[^」]+」(?:または|かつ)?)+)の場合[、]?(.+)$/);
+    if (self) { selfScope = true; m = [self[0], undefined, self[1], undefined, self[2]]; }
+  }
   if (!m) return null;
   const unresolved = [];
   const cond = parseInlineConditions(m[2], tagNameToId, unresolved);
@@ -454,7 +504,7 @@ export function parseConditionalSlot(rawLines, tagNameToId) {
     cond,
     cond_count: m[3] ? Number(m[3]) : 1,
     cond_exclude_self: !!m[1],
-    cond_scope: 'battle',
+    cond_scope: selfScope ? 'self' : 'battle', // self = 装備キャラ自身のタグ等で判定
     cond_raw: joined.slice(0, joined.length - m[4].length),
   };
   if (perMember) condMeta.cond_per_member = true; // 効果値 × 該当人数
@@ -480,6 +530,34 @@ export function parseConditionalSlot(rawLines, tagNameToId) {
 // ---------------------------------------------------------------- マージ
 
 const STATS = ['hp', 'strike_atk', 'blast_atk', 'strike_def', 'blast_def', 'critical', 'ki_recovery'];
+
+/**
+ * 公開済みの game_data/*.json からクロールキャッシュを復元する（--update モード）。
+ * characters.json / fragments.json はパース済み構造（アビリティ原文 text 含む）を
+ * そのまま保持しているため、キャッシュの無い環境（GitHub Actions 等）でも
+ * これをシードすれば「新規ページだけを取得 → merge」の差分更新になる。
+ */
+async function seedCacheFromData() {
+  const seed = async (file, dir, keep) => {
+    const p = join(ROOT, 'game_data', file);
+    if (!existsSync(p)) return 0;
+    const data = JSON.parse(await readFile(p, 'utf8'));
+    let n = 0;
+    for (const [id, entry] of Object.entries(data)) {
+      const dest = join(CRAWL, dir, `${id}.json`);
+      if (existsSync(dest)) continue;
+      if (keep && !keep(entry)) continue;
+      await writeFile(dest, JSON.stringify(entry));
+      n++;
+    }
+    return n;
+  };
+  // 詳細未取得（stats が全0）のキャラはシードせず、再取得の対象に残す
+  const hasDetail = (c) => c.stats && Object.values(c.stats).some((v) => Number(v) > 0);
+  const nc = await seed('characters.json', 'char', hasDetail);
+  const ne = await seed('fragments.json', 'equip', null);
+  if (nc || ne) console.log(`キャッシュを公開データから復元: キャラ ${nc} 体 / 装備 ${ne} 件`);
+}
 
 async function readCache(dir) {
   const out = {};
@@ -550,11 +628,8 @@ async function merge() {
       zenkai_ability: detail?.zenkai_ability || [],
       ultra_ability: (detail?.ultra_ability || []).map((u) => ({
         ...u,
-        // 参照タグはグローバルなタグ表で解決し直す（ページ単体で未解決だった名前の救済）
-        ref_tags: (u.ref_tags || []).map((r) => ({
-          ...r,
-          tag: r.tag ?? tagNameToId[r.name] ?? tagNameToId[String(r.name).normalize('NFKC')] ?? null,
-        })),
+        // 参照タグは本文からグローバルなタグ表で抽出し直す（抽出ロジック更新を再取得なしで反映）
+        ref_tags: extractUltraRefs(u.text, tagNameToId),
       })),
       equip_ids: detail?.equip_ids || [],
       arts: detail?.arts || [],
@@ -563,13 +638,32 @@ async function merge() {
 
   const fragmentsOut = {};
   for (const [id, e] of Object.entries(equips)) {
-    // 効果条件付きスロット（raw行のみのスロット）を再解析する
+    // 効果条件付きスロットを原文の並び順で再解析する。
+    // - 連続する raw ブロック「見出し＋効果」→ parseConditionalSlot
+    // - raw の条件見出し1行＋解析済みの効果行（例: 2093「自身が「…」の場合、」→「特防：…+15%」）
+    //   → 後続の解析済み行に条件メタを付与する
     for (const slot of e.slots || []) {
       const lines = slot.lines || [];
-      if (lines.length > 0 && lines.every((l) => l.raw != null)) {
-        const parsed = parseConditionalSlot(lines.map((l) => l.raw), tagNameToId);
-        if (parsed) slot.lines = parsed;
+      if (lines.length === 0 || !lines.some((l) => l.raw != null)) continue;
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (lines[i].raw == null) { out.push(lines[i]); i++; continue; }
+        const block = [];
+        let j = i;
+        while (j < lines.length && lines[j].raw != null) { block.push(lines[j].raw); j++; }
+        const parsed = parseConditionalSlot(block, tagNameToId);
+        if (parsed) { out.push(...parsed); i = j; continue; }
+        const header = block.length === 1 ? parseConditionHeader(block[0], tagNameToId) : null;
+        if (header && j < lines.length && lines[j].raw == null) {
+          while (j < lines.length && lines[j].raw == null) { out.push({ ...lines[j], ...header }); j++; }
+          i = j;
+          continue;
+        }
+        out.push(...block.map((raw) => ({ raw })));
+        i = j;
       }
+      slot.lines = out;
     }
     // 力の大会専用フラグメント（通常バトルでは装備不可）。
     // サイトに構造化マーカーが無いため名前の接頭辞で判定し、データ側にフラグを持たせる
@@ -620,9 +714,11 @@ async function merge() {
 
 async function main() {
   const mergeOnly = process.argv.includes('--merge');
+  const updateMode = process.argv.includes('--update');
   await mkdir(join(CRAWL, 'char'), { recursive: true });
   await mkdir(join(CRAWL, 'equip'), { recursive: true });
   await mkdir(join(CRAWL, 'failed'), { recursive: true });
+  if (updateMode) await seedCacheFromData();
 
   if (!mergeOnly) {
     // 一覧（毎回取得して新キャラ・新装備を発見する）
