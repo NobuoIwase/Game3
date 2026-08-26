@@ -163,15 +163,19 @@ function charFilterControls(f, onChange) {
     el('datalist', { id: 'tag-datalist' },
       Object.values(state.game.tags).sort().map((n) => el('option', { value: n }))));
 }
+// 重みは「Σ 重み × ❸（絶対値）」の空間の値（§17）。ステータスごとに ❶ の桁が大きく違う
+// （体力 ≈160万 / 攻撃 ≈22万 / 防御 ≈15万）ため、「特化（総合重視）」系は桁を補正した重みにしている
+// （例: 体力0.07 ≒ 相対値時代の0.5に相当）。クリティカル・気力回復は❸換算の絶対値が微小なため
+// 多ステータス目標からは除外（単一ステータス指定や総合ステ最大では従来どおり扱える）。
 const PRESETS = {
   strike_pure: { label: '完全打撃特化', weights: { strike_atk: 1 } },
-  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, hp: 0.5, strike_def: 0.35, blast_def: 0.35, blast_atk: 0.15, critical: 0.1, ki_recovery: 0.05 } },
-  balance: { label: '総合バランス', weights: { hp: 0.6, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.5, blast_def: 0.5, critical: 0.2, ki_recovery: 0.1 } },
-  // 全ステータスの合計値（❸の総和）が最も高くなる配分。体力の絶対値が大きいため体力寄りになる
+  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, blast_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
+  balance: { label: '総合バランス', weights: { hp: 0.08, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.75, blast_def: 0.75 } },
+  // 全ステータスの合計値（❸の総和）が最も高くなる配分。体力の絶対値が大きいため体力寄りになるのは仕様
   total: { label: '総合ステータス最大（全ステ合計）', weights: Object.fromEntries(STATS.map((s) => [s, 1])) },
-  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, hp: 0.5, strike_def: 0.35, blast_def: 0.35, strike_atk: 0.15, critical: 0.1, ki_recovery: 0.05 } },
+  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
-  defense: { label: '耐久特化', weights: { hp: 1, strike_def: 0.7, blast_def: 0.7 } },
+  defense: { label: '耐久特化', weights: { hp: 0.14, strike_def: 1, blast_def: 1 } },
 };
 
 // バトルスタイル → 長所を伸ばす最適化目標（提案機能）。
@@ -1023,8 +1027,8 @@ async function runOptimize() {
   }
 
   // リーダー候補の比較は「重み付きの最終ステ絶対値の合計」で行う。
-  // optimizeParty の totalScore は補正込みの ❸/❸₀ 相対値で、❸₀ 自体がリーダーに依存して
-  // 変わるため、リーダー間の比較には使えない（補正の大きいリーダーほど相対値が縮む）。
+  // optimizeParty の totalScore は全最適化対象（ゼンカイ枠含む）の合算なので使わず、
+  // スタンダードではバトル3体だけを absScoreOf で別途合算して比較する。
   const battleSet = new Set(bIds.map(String));
   const battleMembersOnly = members.filter((m) => battleSet.has(String(m.character.id)));
 

@@ -12,7 +12,8 @@
 //   - bestForCharacter         … キャラ1体に対する最適な N 枚の選出
 //   - optimizeParty            … 対象キャラ全員をそれぞれ独立に厳密最適化
 //
-// スコアは「重み付き相対値」: Σ weight[stat] × (❸ / フラグメント無しの❸)。
+// スコアは「重み付き絶対値」: Σ weight[stat] × ❸。
+// （相対値 ❸/❸₀ は絶対値の小さいステータスを過大評価するため使わない — §17）
 // 固定の「基礎あり優先/基礎なし優先」ルールは実装しない（§2-5）。必ず ❸ を評価して比較する。
 
 import { STATS, finalStat, computeStat } from './calc.js';
@@ -345,6 +346,11 @@ function makeScoreContext(member, ext, weights, weightedStats, warnings) {
   return { stats };
 }
 
+// スコア = Σ 重み × ❸（絶対値）。
+// 以前は ❸/❸₀ の相対値だったが、相対値だと絶対値の小さいステータス
+// （クリティカル・気力回復など）の+X%が打撃攻撃力の+X%と同点になり、
+// 多ステータス目標（総合ステ最大等）で比率の安い弱フラグが選ばれてしまう。
+// 単一ステータス目標では選択結果は同じ（単調変換）。
 function scoreOf(ctx, fragBase, fragNonBase) {
   let score = 0;
   for (let i = 0; i < ctx.stats.length; i++) {
@@ -355,7 +361,7 @@ function scoreOf(ctx, fragBase, fragNonBase) {
       corr: c.extBase + fragBase[i],
       nonBase: c.extNonBase + fragNonBase[i],
     });
-    score += c.weight * (final / c.final0);
+    score += c.weight * final;
   }
   return score;
 }
@@ -566,8 +572,8 @@ export function optimizeParty(p) {
     return { assignments: {}, totalScore: 0, exact: true, ext: {}, warnings: ['評価するステータスの重みがすべて 0 です'], unknown: [] };
   }
   // タイプ別特化（p.weightsById）: キャラごとに重みを上書きできる。
-  // 未指定のキャラは p.weights を使う。奪い合いの裁定はスコア合算で行われるため、
-  // 重みは同じスケール（主軸=1.0 程度）で渡すこと
+  // 未指定のキャラは p.weights を使う。キャラ間で ❸ の桁が異なるため、
+  // weightsById 指定時の奪い合い裁定は ❸₀ で正規化してから合算する（後述・§17）
   const weightsAllFor = (cid) => (p.weightsById && p.weightsById[cid]) || p.weights;
   const ext = partyAbilityCorrections({
     members: p.members, battleIds: p.battleIds, teams: p.teams,
@@ -651,7 +657,19 @@ export function optimizeParty(p) {
         `${pc.member.character.name || pc.cid} の装備組合せが多すぎるため上位 ${maxCombos} 通りに絞りました（厳密解でない可能性があります）`
       );
     }
-    perChar.push({ cid: pc.cid, member: pc.member, combos });
+    perChar.push({ cid: pc.cid, member: pc.member, combos, ctx: pc.ctx });
+  }
+
+  // キャラ別重み（weightsById）併用時の奪い合い裁定は、キャラ間で ❸ の桁が異なる
+  // （体力特化 vs 打撃特化など）ため、フラグ無し基準値 ❸₀ で正規化してから合算する。
+  // キャラ内の組合せ順位は定数除算なので不変（絶対値評価のまま）。
+  if (p.weightsById) {
+    for (const pc of perChar) {
+      if (!pc.ctx) continue;
+      const n = pc.ctx.stats.length;
+      const base0 = scoreOf(pc.ctx, new Float64Array(n), new Float64Array(n));
+      if (base0 > 0) for (const cmb of pc.combos) cmb.score /= base0;
+    }
   }
 
   perChar.sort((a, b) => (b.combos[0]?.score || 0) - (a.combos[0]?.score || 0));

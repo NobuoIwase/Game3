@@ -355,7 +355,8 @@ test('optimizeParty: 奪い合いで貪欲法が誤る局面の厳密解（§4-3
   assert.equal(r.exact, true);
   assert.deepEqual(r.assignments['1'].ids, ['101'], 'A は代替の101を装備');
   assert.deepEqual(r.assignments['2'].ids, ['100'], 'B が100を装備');
-  assert.ok(Math.abs(r.totalScore - 2.95) < 1e-9, `total=${r.totalScore}`);
+  // スコアは重み付き❸の絶対値: A=100000×1.45 + B=100000×1.50 = 295,000
+  assert.ok(Math.abs(r.totalScore - 295_000) < 1e-6, `total=${r.totalScore}`);
 });
 
 test('characterDetail: §2-4 ケース(2) を v2 データ形式のフルパイプラインで再現', () => {
@@ -515,4 +516,53 @@ test('avoidUnmetCond: 条件未達の効果を持つフラグは候補から除�
   }).ids;
   assert.deepEqual(pick(true), ['301'], '未達条件持ちの300を避けて301を選ぶ');
   assert.deepEqual(pick(false), ['300'], '許可すれば無条件分(+30)の高い300を選ぶ');
+});
+
+test('スコアは絶対値: 多ステ重みで比率の安いステ（クリティカル等）を過大評価しない', () => {
+  // 打撃25万・クリ2千のキャラ。相対スコアなら クリ+30% (0.30) > 打撃+10% (0.10) で
+  // クリ側を選んでしまうが、絶対値では 打撃+25,000 >> クリ+600 で打撃側を選ぶべき
+  const member = { character: charaV1(1, [], { strike_atk: 250_000, critical: 2_000 }), my: myOf(1) };
+  const fragments = {
+    10: frag(10, [{ stat: 'strike_atk', base: true, value: 10 }]),
+    11: frag(11, [{ stat: 'critical', base: true, value: 30 }]),
+  };
+  const r = bestForCharacter({
+    member, fragmentsById: fragments, counts: { 10: 1, 11: 1 },
+    weights: { strike_atk: 1, critical: 1 }, effectMap,
+  });
+  assert.deepEqual(r.ids, ['10'], '絶対値で大きい打撃+10%を選ぶ');
+});
+
+test('絶対値スコア: 桁補正済みの特化重みでは体力フラグが攻撃フラグを乗っ取らない', () => {
+  // 打撃特化(総合重視)相当の桁補正済み重み（strike 1 / hp 0.07）。
+  // 補正前の重み(hp 0.5)では 0.5×1.6M×7% > 1×215K×18% で体力側が選ばれてしまう
+  const member = { character: charaV1(1, [], { strike_atk: 215_217, hp: 1_626_929 }), my: myOf(1) };
+  const fragments = {
+    10: frag(10, [{ stat: 'strike_atk', base: true, value: 18 }]),
+    11: frag(11, [{ stat: 'hp', base: true, value: 7 }]),
+  };
+  const r = bestForCharacter({
+    member, fragmentsById: fragments, counts: { 10: 1, 11: 1 },
+    weights: { strike_atk: 1, hp: 0.07 }, effectMap,
+  });
+  assert.deepEqual(r.ids, ['10'], '打撃+18%を選ぶ（体力+7%に乗っ取られない）');
+});
+
+test('奪い合い×weightsById: ❸₀正規化でHP特化キャラが複合フラグを一方的に奪わない', () => {
+  const A = { character: charaV1(1, [], { strike_atk: 215_217, hp: 1_626_929 }), my: myOf(1) };
+  const B = { character: charaV1(2, [], { strike_atk: 215_217, hp: 1_626_929 }), my: myOf(1) };
+  const fragments = {
+    100: frag(100, [{ stat: 'strike_atk', base: true, value: 38 }, { stat: 'hp', base: true, value: 8 }]),
+    101: frag(101, [{ stat: 'strike_atk', base: true, value: 18 }]),
+  };
+  const r = optimizeParty({
+    members: [A, B], battleIds: [1, 2],
+    fragmentsById: fragments, counts: { 100: 1, 101: 6 },
+    weights: { strike_atk: 1 },
+    weightsById: { 2: { hp: 1 } }, // Bは体力特化指定
+    effectMap, targets: 'battle',
+  });
+  assert.equal(r.contended, true);
+  // 複合フラグの主効果は打撃+38% → 相対改善の大きい打撃特化のAが取るべき
+  assert.deepEqual(r.assignments['1'].ids, ['100'], '打撃特化のAが複合フラグを取る');
 });

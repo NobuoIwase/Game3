@@ -208,13 +208,21 @@ export function parseAbilityText(text, tagNameToId) {
       });
       // 解析できた節だけ採用し、できなかった節（%を持たないダウン系等）は unresolved に残す
       if (parsed.some(Boolean)) {
+        // 「&」連結の後続節は直前の節の条件を引き継ぐ（実機では条件が文全体に掛かる。
+        //  例:「「タグ：X」の基礎体力最大値をN%アップ&基礎クリティカル値をN%アップ」は両方X限定）
+        let lastCond = null;
+        let lastCondUnresolved = [];
         parsed.forEach((p, i) => {
           if (!p) { g.unresolved.push(clauses[i]); return; }
           if (p.condText) {
             // 条件付きの節は独立グループにする
             const unresolved = [];
             const cond = parseInlineConditions(p.condText, tagNameToId, unresolved);
+            lastCond = cond;
+            lastCondUnresolved = unresolved;
             groups.push({ cond, unresolved, effects: [{ text: p.text, value: p.value }], raw: body });
+          } else if (lastCond) {
+            groups.push({ cond: lastCond, unresolved: [...lastCondUnresolved], effects: [{ text: p.text, value: p.value }], raw: body });
           } else {
             g.effects.push({ text: p.text, value: p.value });
           }

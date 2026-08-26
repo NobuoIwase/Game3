@@ -183,3 +183,17 @@ test('parseConditionHeader: 見出し1行から条件メタを解析（3形式�
   assert.equal(per.cond_per_member, true);
   assert.equal(parseConditionHeader('場に出た時、体力を回復', T), null, 'アビリティ文は対象外');
 });
+
+test('parseAbilityText: 「&」連結の後続節は直前の節の条件を引き継ぐ', () => {
+  const T = { '悪の系譜': 42 };
+  const g = parseAbilityText('バトル時、「タグ：悪の系譜」の基礎体力最大値を20%アップ&基礎クリティカル値を15%アップ', T);
+  const withEffects = g.filter((x) => x.effects.length > 0);
+  assert.equal(withEffects.length, 2);
+  for (const grp of withEffects) {
+    assert.deepEqual(grp.cond, [[{ tag: 42, name: '悪の系譜' }]], grp.effects[0].text + ' にも条件が付く');
+  }
+  // 条件節が無い行の後続節は従来どおり無条件のまま
+  const g2 = parseAbilityText('基礎打撃攻撃力を20%アップ&基礎射撃攻撃力を15%アップ', T);
+  assert.equal(g2[0].effects.length, 2);
+  assert.equal(g2[0].cond.length, 0);
+});
