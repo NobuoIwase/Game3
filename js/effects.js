@@ -257,7 +257,7 @@ export function resolveAbilityGroups(groups, effectMap, sourceName = '') {
     }
     // フェイルセーフ（原則1-4）: 効果があるのに条件らしき行が未解析のままのグループは、
     // 「無条件＝全員に適用」と誤解釈せず、絶対に一致しない条件を付けて警告する。
-    const CONDLIKE = /「(?:タグ|属性|エピソード|レアリティ|キャラクター|バトルスタイル)[:：]|【対象キャラクター】/;
+    const CONDLIKE = /「(?:タグ|属性|エピソード|レアリティ|キャラクター|バトルスタイル)[:：]|【対象キャラクター】|\{\{ICN:/;
     let cond = g.cond || [];
     if (effects.length > 0 && cond.length === 0) {
       const suspect = (g.unresolved || []).find((u) => CONDLIKE.test(u));

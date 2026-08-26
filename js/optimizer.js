@@ -244,8 +244,9 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
 /**
  * ゼンカイ枠（スタンダード下段3枠）の自動選出。
  * 各候補を「バトル3体の重み付き補正増分」で採点し、増分が正の上位3体を返す。
- * アビリティ補正はキャラごとの独立な加算なので、候補同士に相互作用は無く、
- * 上位3体を選べば3枠合計も最大になる（厳密）。
+ * アビリティ補正はキャラごとの加算が主で、候補同士に相互作用はほぼ無く、
+ * 上位3体を選べば3枠合計もほぼ最大になる（基礎あり補正のみなら厳密。
+ * 手入力由来の基礎なし補正 extNonBase は乗算のため交差項があり、その場合は近似）。
  * リーダーの「他キャラのZアビをタグ無視で受ける」特殊ルールも採点に含まれる。
  * 補正+1%の価値は ≈ 0.01×❶ で近似する（フラグメント配分が未確定の段階のため）。
  *
@@ -269,7 +270,8 @@ export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsB
         const sb = statBase(m.character, m.my, s);
         if (!sb || sb.base <= 0) continue;
         const corr = (e.z[s] || 0) + (e.zenkai[s] || 0) + (e.ll[s] || 0);
-        t += w * corr * sb.base * 0.01;
+        const nb = (e.extNonBase && e.extNonBase[s]) || 0; // 手入力の基礎なし補正（乗算）
+        t += w * sb.base * (((corr * 0.01 + 1) * (nb * 0.01 + 1)) - 1);
       }
     }
     return t;

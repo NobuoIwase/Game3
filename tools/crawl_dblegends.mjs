@@ -130,11 +130,13 @@ function parseInlineConditions(condText, tagNameToId, unresolved) {
  */
 export function parseAbilityText(text, tagNameToId) {
   const iconRe = /\{\{ICN:([^}]+)\}\}/;
+  // 条件行の目印になるアイコン: タグ・属性のほか、エピソード(Epi)・キャラクター(Chara)単独の
+  // 条件行も存在する（例: ターレスのZアビ「{{ICN:Epi}}劇場版編」）。名前はタグ体系で解決できる
   const isConditionLine = (line) => {
     const tokens = line.match(/\{\{ICN:[^}]+\}\}/g) || [];
     return tokens.some((t) => {
       const icn = t.match(iconRe)[1];
-      return icn === 'ChaTag' || ELEMENT_CODES.includes(icn);
+      return icn === 'ChaTag' || icn === 'Epi' || icn === 'Chara' || ELEMENT_CODES.includes(icn);
     });
   };
   const groups = [];
@@ -198,7 +200,9 @@ export function parseAbilityText(text, tagNameToId) {
         });
         continue;
       }
-      g.unresolved.push(body);
+      // ICNトークンを含む行はアイコンを剥がさず原文で残す。
+      // 未知の条件アイコンだった場合に、フェイルセーフ（effects.js）が検知できるようにするため
+      g.unresolved.push(/\{\{ICN:/.test(line) ? line : body);
     }
     if (g.effects.length > 0 || g.cond.length > 0 || g.unresolved.length > 0) groups.push(g);
   }
@@ -286,19 +290,29 @@ export function parseCharacterPage(html, id) {
     // ULTRAアビリティ（レアリティULTRAのみ）。d.ab.u: [[?,?,アビリティID,?],...]
     // 効果は与ダメージ等の戦闘効果でステータス式(❸)には乗らないため、
     // 原文と参照タグ（リーダー/同タグ編成判断の表示用）のみ保存する
-    ultra_ability: ((d.ab || {}).u || [])
-      .map((entry) => (Array.isArray(entry) ? entry[2] : entry))
-      .filter((aid) => aid != null && aid !== -1 && ab[String(aid)])
-      .map((aid) => {
-        const [name, atext] = ab[String(aid)];
-        const refTags = [];
-        for (const m of String(atext).matchAll(/「(?:タグ|エピソード|キャラクター)：([^」]+)」/g)) {
-          const nm = m[1].trim();
-          const tid = tagNameToId[nm] ?? tagNameToId[nm.normalize('NFKC')];
-          if (!refTags.some((r) => r.name === nm)) refTags.push({ name: nm, tag: tid != null ? Number(tid) : null });
-        }
-        return { id: aid, name, text: atext, ref_tags: refTags };
-      }),
+    ultra_ability: (() => {
+      const list = ((d.ab || {}).u || [])
+        .map((entry) => (Array.isArray(entry) ? entry[2] : entry))
+        .filter((aid) => aid != null && aid !== -1 && ab[String(aid)])
+        .map((aid) => {
+          const [name, atext] = ab[String(aid)];
+          const refTags = [];
+          // 「…に対する」が続く参照は敵対象（編成条件ではない）ので enemy フラグを付ける
+          for (const m of String(atext).matchAll(/「(?:タグ|エピソード|キャラクター)：([^」]+)」(に対する)?/g)) {
+            const nm = m[1].trim();
+            const tid = tagNameToId[nm] ?? tagNameToId[nm.normalize('NFKC')];
+            if (!refTags.some((r) => r.name === nm)) {
+              refTags.push({ name: nm, tag: tid != null ? Number(tid) : null, enemy: m[2] != null });
+            }
+          }
+          return { id: aid, name: String(name || ''), text: String(atext || ''), ref_tags: refTags };
+        })
+        .filter((u) => u.name.trim() || u.text.trim()); // ab表の空エントリを除外
+      // レベル違いの同名エントリはテーブル上重複する → 最後（最高レベル）だけ残す
+      const byName = new Map();
+      for (const u of list) byName.set(u.name || String(u.id), u);
+      return [...byName.values()];
+    })(),
     equip_ids: eq.map((e) => Number(e[0])).filter(Number.isFinite),
     arts,
   };

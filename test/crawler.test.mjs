@@ -140,3 +140,18 @@ test('parseAbilityText: レアリティ条件の箇条書き型（RED かつ EXT
   const g = parseAbilityText(text, T);
   assert.deepEqual(g[0].cond, [[{ tag: 15000, name: 'RED' }, { tag: 12001, name: 'EXTREME' }]]);
 });
+
+test('parseAbilityText: {{ICN:Epi}}単独の条件行もエピソードタグとして解決される', () => {
+  const T = { '劇場版編': 20015 };
+  const g = parseAbilityText('{{ICN:Epi}}劇場版編\r\n○基礎射撃攻撃力32%{{ICN:UpBlue}}', T);
+  assert.equal(g.length, 1);
+  assert.deepEqual(g[0].cond, [[{ tag: 20015, name: '劇場版編' }]]);
+  assert.deepEqual(g[0].effects, [{ text: '基礎射撃攻撃力', value: 32 }]);
+});
+
+test('parseAbilityText: 未知のICN行はアイコン付き原文でunresolvedに残る（フェイルセーフ連携）', () => {
+  const g = parseAbilityText('{{ICN:Mystery}}謎条件\r\n○基礎打撃攻撃力10%{{ICN:UpBlue}}', {});
+  assert.equal(g.length, 1);
+  assert.equal(g[0].cond.length, 0);
+  assert.ok(g[0].unresolved.some((u) => u.includes('{{ICN:')), 'ICNトークンが残る');
+});

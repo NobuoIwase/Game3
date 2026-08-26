@@ -167,3 +167,18 @@ test('resolveAbilityGroups: 条件行が未解析のグループは無条件適�
   assert.equal(conditionMatches(r.groups[0].cond, { tags: [15003, 31], element: 'GRN' }), false);
   assert.ok(r.unknown.some((u) => u.includes('条件行が未解析')), '警告が出る');
 });
+
+test('resolveAbilityGroups: ICN形式の未解析条件行もフェイルセーフで全員適用を防ぐ', async () => {
+  const { resolveAbilityGroups, conditionMatches } = await import('../js/effects.js');
+  const groups = [{
+    cond: [],
+    unresolved: ['{{ICN:Mystery}}謎条件'],
+    effects: [{ text: '基礎打撃攻撃力', value: 10 }],
+    raw: '',
+  }];
+  const map = { entries: { '基礎打撃攻撃力': { stat: 'strike_atk', base: true } } };
+  const r = resolveAbilityGroups(groups, map, 'テスト');
+  assert.ok(r.groups[0].cond.length > 0);
+  assert.equal(conditionMatches(r.groups[0].cond, { tags: [1, 2, 3], element: 'RED' }), false);
+  assert.ok(r.unknown.some((u) => u.includes('条件行が未解析')));
+});

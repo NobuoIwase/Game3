@@ -628,6 +628,9 @@ function renderParty() {
 
 function renderOptimizerPanel() {
   const m = ui.opt;
+  // 旧バージョンで保存されたプリセット名（attack等）は balance に正規化して
+  // UI表示と実際の重み（currentWeights のフォールバック）を一致させる
+  if (!PRESETS[m.preset]) m.preset = 'balance';
   return el('div', { class: 'card' },
     el('h3', {}, '自動最適化'),
     el('div', { class: 'check' },
@@ -928,35 +931,38 @@ async function runOptimize() {
   const contexts = battleContexts(members);
 
   // タイプ別特化（styleSplit）: 攻撃の主軸がある目標のとき、主軸と逆のタイプのキャラは
-  // 打撃/射撃の重みを入れ替えて組む（例: 射撃特化パの打撃タイプは打撃で組む）
+  // 打撃/射撃の重みを入れ替えて組む（例: 射撃特化パの打撃タイプは打撃で組む）。
+  // ゼンカイ枠の自動選出でメンバー集合がリーダー候補ごとに変わるため、集合ごとに導出する
   const swapAtkWeights = (w) => ({ ...w, strike_atk: w.blast_atk || 0, blast_atk: w.strike_atk || 0 });
   const focusOf = (w) => ((w.strike_atk || 0) > (w.blast_atk || 0) ? 'strike'
     : (w.blast_atk || 0) > (w.strike_atk || 0) ? 'blast' : null);
   const baseFocus = focusOf(weights);
-  const weightsById = {};
-  const styleSwapped = []; // {cid, ownStat, partyStat}
-  if (ui.opt.styleSplit !== false && baseFocus) {
-    for (const m of members) {
-      const tags = m.character.tags || [];
-      const swap = (baseFocus === 'blast' && tags.includes(13002)) // 打撃タイプ
-        || (baseFocus === 'strike' && tags.includes(13003));       // 射撃タイプ
-      if (swap) {
-        const cid = String(m.character.id);
-        weightsById[cid] = swapAtkWeights(weights);
-        styleSwapped.push({
-          cid,
-          ownStat: baseFocus === 'blast' ? 'strike_atk' : 'blast_atk',
-          partyStat: baseFocus === 'blast' ? 'blast_atk' : 'strike_atk',
-        });
+  const styleOverridesFor = (memList) => {
+    const wById = {};
+    const swapped = []; // {cid, ownStat, partyStat}
+    if (ui.opt.styleSplit !== false && baseFocus) {
+      for (const m of memList) {
+        const tags = m.character.tags || [];
+        const swap = (baseFocus === 'blast' && tags.includes(13002)) // 打撃タイプ
+          || (baseFocus === 'strike' && tags.includes(13003));       // 射撃タイプ
+        if (swap) {
+          const cid = String(m.character.id);
+          wById[cid] = swapAtkWeights(weights);
+          swapped.push({
+            cid,
+            ownStat: baseFocus === 'blast' ? 'strike_atk' : 'blast_atk',
+            partyStat: baseFocus === 'blast' ? 'blast_atk' : 'strike_atk',
+          });
+        }
       }
     }
-  }
+    return { wById, swapped };
+  };
 
   const baseParams = {
     members, battleIds: bIds, teams, contexts,
     fragmentsById: state.game.fragments, counts,
     weights, effectMap: state.game.effectMap,
-    weightsById: Object.keys(weightsById).length ? weightsById : undefined,
     targets: proud ? 'all' : ui.opt.targets,
   };
   const currentLeaders = proud
@@ -979,9 +985,15 @@ async function runOptimize() {
   // リーダー候補の比較は「重み付きの最終ステ絶対値の合計」で行う。
   // optimizeParty の totalScore は補正込みの ❸/❸₀ 相対値で、❸₀ 自体がリーダーに依存して
   // 変わるため、リーダー間の比較には使えない（補正の大きいリーダーほど相対値が縮む）。
-  const absScoreOf = (r, mem, ctx) => {
+  const battleSet = new Set(bIds.map(String));
+  const battleMembersOnly = members.filter((m) => battleSet.has(String(m.character.id)));
+
+  // リーダー候補の比較値。スタンダードではバトル3体だけを合算する
+  // （ゼンカイ枠はリーダー候補ごとに顔ぶれが変わるため、ベンチ自身のステを混ぜると比較が汚染される）
+  const absScoreOf = (r, mem, ctx, wById) => {
     let total = 0;
     for (const [cid, asg] of Object.entries(r.assignments)) {
+      if (!proud && !battleSet.has(String(cid))) continue;
       const m = mem.find((x) => String(x.character.id) === cid);
       if (!m) continue;
       const d = characterDetail({
@@ -989,7 +1001,7 @@ async function runOptimize() {
         fragmentList: asg.ids.map(fragDef).filter(Boolean),
         effectMap: state.game.effectMap, context: ctx[cid],
       });
-      const wm = weightsById[cid] || weights;
+      const wm = (wById && wById[cid]) || weights;
       for (const [s, w] of Object.entries(wm)) {
         if (w > 0 && d.stats[s]) total += w * d.stats[s].final;
       }
@@ -999,9 +1011,8 @@ async function runOptimize() {
 
   // ゼンカイ枠の自動選出（スタンダードのみ）: 所持キャラからバトル3体への恩恵最大の3体。
   // リーダーの「Zアビをタグ無視で受ける」特殊ルールが採点に効くため、リーダー候補ごとに選び直す
-  const battleSet = new Set(bIds.map(String));
-  const battleMembersOnly = members.filter((m) => battleSet.has(String(m.character.id)));
   const autoZenkai = !proud && ui.opt.autoZenkai !== false && battleMembersOnly.length > 0;
+  const battleStyle = styleOverridesFor(battleMembersOnly);
   const toMember = (cid) => {
     const def = charDef(cid);
     return def ? { character: def, my: charMy(cid) || defaultCharMy(def) } : null;
@@ -1021,20 +1032,23 @@ async function runOptimize() {
       if (autoZenkai) {
         zPick = pickZenkaiMembers({
           battleMembers: battleMembersOnly, candidates: zenkaiCandidates,
-          weights, weightsById, effectMap: state.game.effectMap, leaderId: combo[0],
+          weights, weightsById: battleStyle.wById, effectMap: state.game.effectMap, leaderId: combo[0],
         });
         mem = [...battleMembersOnly, ...zPick.map((z) => toMember(String(z.id))).filter(Boolean)];
         ctx = battleContexts(mem);
       }
+      // タイプ別特化の上書きは、確定したメンバー集合（自動選出したゼンカイ枠込み）から導出する
+      const so = styleOverridesFor(mem);
       const r = optimizeParty({
         ...baseParams,
         members: mem, contexts: ctx,
+        weightsById: Object.keys(so.wById).length ? so.wById : undefined,
         itemsCache,
         leaderId: proud ? undefined : combo[0],
         leaders: proud ? combo : undefined,
       });
-      const abs = absScoreOf(r, mem, ctx);
-      leaderResults.push({ result: r, leaders: combo, abs, zenkai: zPick, mem, ctx });
+      const abs = absScoreOf(r, mem, ctx, so.wById);
+      leaderResults.push({ result: r, leaders: combo, abs, zenkai: zPick, mem, ctx, so });
       if (r.contended && leaderCombos.length > 1) {
         // 所持数を絞って奪い合いがある場合は探索が重いため、現在の配置のみで実行する
         showMsg('info', '所持数を絞っているため、リーダー探索は現在のリーダー配置のみで実行しました。');
@@ -1100,7 +1114,7 @@ async function runOptimize() {
   // タイプ別特化の逆転チェック: タイプに合わせて組んだ結果が、パーティ目標のまま組んだ場合より
   // 弱いキャラがいれば通知する（§12: 打撃で組んだ打撃キャラが射撃で組むより弱いケース）
   const styleNotes = [];
-  for (const sw of styleSwapped) {
+  for (const sw of (best.so?.swapped || [])) {
     try {
       const asg = result.assignments[sw.cid];
       const m = (best.mem || members).find((x) => String(x.character.id) === sw.cid);
@@ -1121,7 +1135,8 @@ async function runOptimize() {
       if (altV > own * 1.001) {
         styleNotes.push(
           `${m.character.name} はタイプに合わせて${STAT_LABELS[sw.ownStat]}で組みましたが、` +
-          `${STAT_LABELS[sw.partyStat]}で組んだ方が高くなります（${fmt0(own)} → ${fmt0(altV)}）。` +
+          `${STAT_LABELS[sw.partyStat]}で組んだ方が高くなります（${fmt0(own)} → ${fmt0(altV)}、` +
+          `他キャラとのフラグ奪い合いを考慮しない概算）。` +
           `「キャラのタイプに合わせて特化」をオフにするとパーティ目標のまま組めます。`);
       }
     } catch (e) {
@@ -1456,16 +1471,21 @@ function openCharSheet(cid) {
       el('p', { class: 'small-note' },
         '与ダメージ・気力回復などの戦闘効果のためステータス計算(❸)には含まれません。' +
         'リーダー枠に置く、または参照タグのキャラを編成すると強化される効果です。'),
-      ...list.map((u) => el('div', { style: 'margin-bottom:8px' },
+      ...list.filter((u) => (u.text || '').trim() || (u.name || '').trim()).map((u) => el('div', { style: 'margin-bottom:8px' },
         el('div', { class: 'item-title' }, u.name),
         el('div', { class: 'item-desc', style: 'white-space:pre-wrap' }, u.text),
         (u.ref_tags || []).length && battleMembers.length
           ? el('div', {}, (u.ref_tags || []).map((r) => {
+              if (r.enemy) {
+                // 「〜に対する」= 敵対象タグ。編成条件ではないので人数は数えない
+                return el('span', { class: 'ultra-cond-ng', style: 'margin-right:10px;font-size:12px' },
+                  `「${r.name}」（敵対象）`);
+              }
               const n = r.tag != null
                 ? battleMembers.filter((m) => (m.character.tags || []).includes(r.tag)).length
                 : 0;
               return el('span', { class: n > 0 ? 'ultra-cond-ok' : 'ultra-cond-ng', style: 'margin-right:10px;font-size:12px' },
-                `「${r.name}」バトル3体中 ${n} 体`);
+                `「${r.name}」出撃メンバー中 ${n} 体`);
             }))
           : null)));
   };
