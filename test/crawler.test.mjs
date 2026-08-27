@@ -229,3 +229,23 @@ test('parseConditionalSlot: 「自身以外の〜がいると」実例（我は�
   assert.equal(r[0].value_min, 5);
   assert.deepEqual(r[0].cond, [[{ tag: 26, name: '未来' }]]);
 });
+
+test('parseConditionalSlot: 1スロット内の連続する複数条件文をそれぞれの条件で解析する', async () => {
+  const { parseConditionalSlot } = await import('../tools/crawl_dblegends.mjs');
+  const T = { 'フリーザ軍': 5, '人造人間': 12 };
+  const r = parseConditionalSlot([
+    'バトルメンバーに',
+    '「タグ：フリーザ軍」がいると、',
+    '自身の打撃攻撃力を6.00% ~ 10.00%アップ',
+    'バトルメンバーに',
+    '「タグ：人造人間」がいると、',
+    '自身の打撃・射撃防御力を6.00% ~ 10.00%アップ',
+  ], T);
+  assert.equal(r.length, 2);
+  assert.deepEqual(r[0].cond, [[{ tag: 5, name: 'フリーザ軍' }]]);
+  assert.equal(r[0].text, '打撃攻撃力');
+  assert.deepEqual(r[1].cond, [[{ tag: 12, name: '人造人間' }]], '2つ目は人造人間条件');
+  assert.equal(r[1].text, '打撃・射撃防御力');
+  assert.equal(r[1].value, 10);
+  assert.equal(r[1].value_min, 6);
+});

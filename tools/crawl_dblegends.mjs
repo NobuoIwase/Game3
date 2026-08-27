@@ -489,6 +489,25 @@ export function parseConditionHeader(text, tagNameToId) {
 
 export function parseConditionalSlot(rawLines, tagNameToId) {
   const joined = rawLines.join('');
+  // 1スロットに条件文が複数連続することがある（例: 覚醒「かつての敵との共闘！」スロット3:
+  // フリーザ軍→打撃攻撃 / 人造人間→打撃・射撃防御）。分割しないと2つ目の効果に
+  // 1つ目の条件が付いてしまうため、条件見出しの開始位置で分割して個別に解析する
+  const segments = joined
+    .split(/(?=バトルメンバーに(?:自身以外の)?「|バトルメンバーの(?:自身以外の)?「|自身が「)/)
+    .filter((s) => s.trim());
+  if (segments.length > 1) {
+    const out = [];
+    for (const seg of segments) {
+      const r = parseOneConditionalText(seg, tagNameToId);
+      if (!r) return null; // 一部でも解析できなければ全体を諦めて raw のまま残す
+      out.push(...r);
+    }
+    return out;
+  }
+  return parseOneConditionalText(joined, tagNameToId);
+}
+
+function parseOneConditionalText(joined, tagNameToId) {
   // 形式1: 「…が[N人[以上]]いると、〜アップ」 / 形式2: 「…1人につき、〜ずつアップ」（人数比例）
   let perMember = false;
   let selfScope = false;
