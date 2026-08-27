@@ -214,3 +214,18 @@ test('parseEquipPage: 選択式スロット（eqd-option）を option 番号付�
   assert.deepEqual([...new Set(opts)], [1, 2], '選択肢1と2が保存される');
   assert.ok(r.slots[1].lines.every((l) => l.raw != null), 'クロール時は raw 保存');
 });
+
+test('parseConditionalSlot: 「自身以外の〜がいると」実例（我は不死身 スロット2形式）', async () => {
+  const { parseConditionalSlot } = await import('../tools/crawl_dblegends.mjs');
+  const T = { '未来': 26 };
+  const r = parseConditionalSlot([
+    'バトルメンバーに自身以外の',
+    '「タグ：未来」がいると、',
+    '自身の打撃防御力を5.00% ~ 12.00%アップ',
+  ], T);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].cond_exclude_self, true);
+  assert.equal(r[0].value, 12);
+  assert.equal(r[0].value_min, 5);
+  assert.deepEqual(r[0].cond, [[{ tag: 26, name: '未来' }]]);
+});

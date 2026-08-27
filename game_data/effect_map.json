@@ -1,92 +1,283 @@
 {
-  "_comment": [
-    "効果文言 → 内部表現の変換表（DESIGN.md §3-3 / §1-3）。",
-    "新しい効果文言が出たら entries に1行足すだけで対応する。コードに分岐を書かない。",
-    "値の形式: {stat, base} 単一 / {stats:[...], base} 複合表記 / {other:true} 計算対象外と確認済み。",
-    "entries に無い文言は _stat_keywords による規則パース（§2-1: 「基礎」で始まるかが",
-    "加算/乗算の唯一の判別基準。「〜アップ」接尾辞や「打撃・射撃」複合表記にも対応）を試み、",
-    "それでも解決できなければ『未対応』として必ず画面に表示する（§1-4）。",
-    "other:true は『ステータス計算に関係しないと確認済みの効果』。警告は出さないが計算にも入れない。"
-  ],
-  "_other_patterns": [
-    "^特[攻防][:：]"
-  ],
-  "_stat_keywords": {
-    "打撃攻撃力": "strike_atk",
-    "射撃攻撃力": "blast_atk",
-    "打撃防御力": "strike_def",
-    "射撃防御力": "blast_def",
-    "クリティカル": "critical",
-    "クリティカル値": "critical",
-    "気力回復": "ki_recovery",
-    "体力": "hp",
-    "体力最大値": "hp"
+ "_comment": [
+  "効果文言 → 内部表現の変換表（DESIGN.md §3-3 / §1-3）。",
+  "新しい効果文言が出たら entries に1行足すだけで対応する。コードに分岐を書かない。",
+  "値の形式: {stat, base} 単一 / {stats:[...], base} 複合表記 / {other:true} 計算対象外と確認済み。",
+  "entries に無い文言は _stat_keywords による規則パース（§2-1: 「基礎」で始まるかが",
+  "加算/乗算の唯一の判別基準。「〜アップ」接尾辞や「打撃・射撃」複合表記にも対応）を試み、",
+  "それでも解決できなければ『未対応』として必ず画面に表示する（§1-4）。",
+  "other:true は『ステータス計算に関係しないと確認済みの効果』。警告は出さないが計算にも入れない。"
+ ],
+ "_other_patterns": [
+  "^特[攻防][:：]",
+  "に対する.+与ダメージ"
+ ],
+ "_stat_keywords": {
+  "打撃攻撃力": "strike_atk",
+  "射撃攻撃力": "blast_atk",
+  "打撃防御力": "strike_def",
+  "射撃防御力": "blast_def",
+  "クリティカル": "critical",
+  "クリティカル値": "critical",
+  "気力回復": "ki_recovery",
+  "体力": "hp",
+  "体力最大値": "hp"
+ },
+ "entries": {
+  "基礎体力": {
+   "stat": "hp",
+   "base": true
   },
-  "entries": {
-    "基礎体力":             { "stat": "hp", "base": true },
-    "基礎打撃攻撃力":       { "stat": "strike_atk", "base": true },
-    "基礎射撃攻撃力":       { "stat": "blast_atk", "base": true },
-    "基礎打撃防御力":       { "stat": "strike_def", "base": true },
-    "基礎射撃防御力":       { "stat": "blast_def", "base": true },
-    "基礎クリティカル":     { "stat": "critical", "base": true },
-    "基礎気力回復":         { "stat": "ki_recovery", "base": true },
-    "基礎気力回復速度":     { "stat": "ki_recovery", "base": true },
-    "基礎体力最大値":       { "stat": "hp", "base": true },
-    "基礎打撃・射撃攻撃力": { "stats": ["strike_atk", "blast_atk"], "base": true },
-    "基礎打撃・射撃防御力": { "stats": ["strike_def", "blast_def"], "base": true },
-    "基礎打撃攻撃・防御力": { "stats": ["strike_atk", "strike_def"], "base": true },
-    "基礎射撃攻撃・防御力": { "stats": ["blast_atk", "blast_def"], "base": true },
-    "体力":                 { "stat": "hp", "base": false },
-    "打撃攻撃力":           { "stat": "strike_atk", "base": false },
-    "射撃攻撃力":           { "stat": "blast_atk", "base": false },
-    "打撃防御力":           { "stat": "strike_def", "base": false },
-    "射撃防御力":           { "stat": "blast_def", "base": false },
-    "クリティカル":         { "stat": "critical", "base": false },
-    "気力回復":             { "stat": "ki_recovery", "base": false },
-    "体力最大値":           { "stat": "hp", "base": false },
-    "打撃・射撃攻撃力":     { "stats": ["strike_atk", "blast_atk"], "base": false },
-    "打撃・射撃防御力":     { "stats": ["strike_def", "blast_def"], "base": false },
-    "打撃攻撃・防御力":     { "stats": ["strike_atk", "strike_def"], "base": false },
-    "射撃攻撃・防御力":     { "stats": ["blast_atk", "blast_def"], "base": false },
-
-    "基礎打撃攻撃力アップ":   { "stat": "strike_atk", "base": true },
-    "打撃攻撃力アップ":       { "stat": "strike_atk", "base": false },
-    "基礎射撃攻撃力アップ":   { "stat": "blast_atk", "base": true },
-    "射撃攻撃力アップ":       { "stat": "blast_atk", "base": false },
-    "基礎打撃防御力アップ":   { "stat": "strike_def", "base": true },
-    "打撃防御力アップ":       { "stat": "strike_def", "base": false },
-    "基礎射撃防御力アップ":   { "stat": "blast_def", "base": true },
-    "射撃防御力アップ":       { "stat": "blast_def", "base": false },
-    "基礎体力アップ":         { "stat": "hp", "base": true },
-    "体力アップ":             { "stat": "hp", "base": false },
-    "基礎クリティカルアップ": { "stat": "critical", "base": true },
-    "クリティカルアップ":     { "stat": "critical", "base": false },
-    "基礎気力回復アップ":     { "stat": "ki_recovery", "base": true },
-    "気力回復アップ":         { "stat": "ki_recovery", "base": false },
-
-    "与ダメージ":       { "other": true },
-    "被ダメージ":       { "other": true },
-    "ダメージガード":   { "other": true },
-    "体力被回復量":     { "other": true },
-    "体力回復量":       { "other": true },
-    "被回復量":         { "other": true },
-    "必殺技与ダメージ": { "other": true },
-    "必殺与ダメージ":   { "other": true },
-    "究極・覚醒与ダメージ": { "other": true },
-    "究極与ダメージ":   { "other": true },
-    "打撃与ダメージ":   { "other": true },
-    "射撃与ダメージ":   { "other": true },
-    "打撃アーツ与ダメージ": { "other": true },
-    "射撃アーツ与ダメージ": { "other": true },
-    "さらに、味方の自爆による与ダメージ": { "other": true },
-    "クリティカル発生率": { "other": true },
-    "クリティカルダメージ": { "other": true },
-    "気力回復速度":       { "other": true },
-    "必殺技ダメージ":     { "other": true },
-    "究極技ダメージ":     { "other": true },
-    "バニシングゲージ回復速度": { "other": true },
-    "自爆ダメージ":       { "other": true },
-    "に対する与ダメージ": { "other": true },
-    "味方の自爆による与ダメージ": { "other": true }
+  "基礎打撃攻撃力": {
+   "stat": "strike_atk",
+   "base": true
+  },
+  "基礎射撃攻撃力": {
+   "stat": "blast_atk",
+   "base": true
+  },
+  "基礎打撃防御力": {
+   "stat": "strike_def",
+   "base": true
+  },
+  "基礎射撃防御力": {
+   "stat": "blast_def",
+   "base": true
+  },
+  "基礎クリティカル": {
+   "stat": "critical",
+   "base": true
+  },
+  "基礎気力回復": {
+   "stat": "ki_recovery",
+   "base": true
+  },
+  "基礎気力回復速度": {
+   "stat": "ki_recovery",
+   "base": true
+  },
+  "基礎体力最大値": {
+   "stat": "hp",
+   "base": true
+  },
+  "基礎打撃・射撃攻撃力": {
+   "stats": [
+    "strike_atk",
+    "blast_atk"
+   ],
+   "base": true
+  },
+  "基礎打撃・射撃防御力": {
+   "stats": [
+    "strike_def",
+    "blast_def"
+   ],
+   "base": true
+  },
+  "基礎打撃攻撃・防御力": {
+   "stats": [
+    "strike_atk",
+    "strike_def"
+   ],
+   "base": true
+  },
+  "基礎射撃攻撃・防御力": {
+   "stats": [
+    "blast_atk",
+    "blast_def"
+   ],
+   "base": true
+  },
+  "体力": {
+   "stat": "hp",
+   "base": false
+  },
+  "打撃攻撃力": {
+   "stat": "strike_atk",
+   "base": false
+  },
+  "射撃攻撃力": {
+   "stat": "blast_atk",
+   "base": false
+  },
+  "打撃防御力": {
+   "stat": "strike_def",
+   "base": false
+  },
+  "射撃防御力": {
+   "stat": "blast_def",
+   "base": false
+  },
+  "クリティカル": {
+   "stat": "critical",
+   "base": false
+  },
+  "気力回復": {
+   "stat": "ki_recovery",
+   "base": false
+  },
+  "体力最大値": {
+   "stat": "hp",
+   "base": false
+  },
+  "打撃・射撃攻撃力": {
+   "stats": [
+    "strike_atk",
+    "blast_atk"
+   ],
+   "base": false
+  },
+  "打撃・射撃防御力": {
+   "stats": [
+    "strike_def",
+    "blast_def"
+   ],
+   "base": false
+  },
+  "打撃攻撃・防御力": {
+   "stats": [
+    "strike_atk",
+    "strike_def"
+   ],
+   "base": false
+  },
+  "射撃攻撃・防御力": {
+   "stats": [
+    "blast_atk",
+    "blast_def"
+   ],
+   "base": false
+  },
+  "基礎打撃攻撃力アップ": {
+   "stat": "strike_atk",
+   "base": true
+  },
+  "打撃攻撃力アップ": {
+   "stat": "strike_atk",
+   "base": false
+  },
+  "基礎射撃攻撃力アップ": {
+   "stat": "blast_atk",
+   "base": true
+  },
+  "射撃攻撃力アップ": {
+   "stat": "blast_atk",
+   "base": false
+  },
+  "基礎打撃防御力アップ": {
+   "stat": "strike_def",
+   "base": true
+  },
+  "打撃防御力アップ": {
+   "stat": "strike_def",
+   "base": false
+  },
+  "基礎射撃防御力アップ": {
+   "stat": "blast_def",
+   "base": true
+  },
+  "射撃防御力アップ": {
+   "stat": "blast_def",
+   "base": false
+  },
+  "基礎体力アップ": {
+   "stat": "hp",
+   "base": true
+  },
+  "体力アップ": {
+   "stat": "hp",
+   "base": false
+  },
+  "基礎クリティカルアップ": {
+   "stat": "critical",
+   "base": true
+  },
+  "クリティカルアップ": {
+   "stat": "critical",
+   "base": false
+  },
+  "基礎気力回復アップ": {
+   "stat": "ki_recovery",
+   "base": true
+  },
+  "気力回復アップ": {
+   "stat": "ki_recovery",
+   "base": false
+  },
+  "与ダメージ": {
+   "other": true
+  },
+  "被ダメージ": {
+   "other": true
+  },
+  "ダメージガード": {
+   "other": true
+  },
+  "体力被回復量": {
+   "other": true
+  },
+  "体力回復量": {
+   "other": true
+  },
+  "被回復量": {
+   "other": true
+  },
+  "必殺技与ダメージ": {
+   "other": true
+  },
+  "必殺与ダメージ": {
+   "other": true
+  },
+  "究極・覚醒与ダメージ": {
+   "other": true
+  },
+  "究極与ダメージ": {
+   "other": true
+  },
+  "打撃与ダメージ": {
+   "other": true
+  },
+  "射撃与ダメージ": {
+   "other": true
+  },
+  "打撃アーツ与ダメージ": {
+   "other": true
+  },
+  "射撃アーツ与ダメージ": {
+   "other": true
+  },
+  "さらに、味方の自爆による与ダメージ": {
+   "other": true
+  },
+  "クリティカル発生率": {
+   "other": true
+  },
+  "クリティカルダメージ": {
+   "other": true
+  },
+  "気力回復速度": {
+   "other": true
+  },
+  "必殺技ダメージ": {
+   "other": true
+  },
+  "究極技ダメージ": {
+   "other": true
+  },
+  "バニシングゲージ回復速度": {
+   "other": true
+  },
+  "自爆ダメージ": {
+   "other": true
+  },
+  "に対する与ダメージ": {
+   "other": true
+  },
+  "味方の自爆による与ダメージ": {
+   "other": true
+  },
+  "被ダメージカット": {
+   "other": true
   }
+ }
 }
