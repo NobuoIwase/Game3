@@ -30,6 +30,9 @@ const ui = {
     // 条件未達の効果を持つフラグを丸ごと除外するか。既定OFF: 除外すると強フラグまで
     // 候補から消えて弱い装備になりがち（未達の効果はもともと0価値で公平に評価される）
     excludeUnmetCond: false,
+    // 条件未達の効果行を持つフラグを未達1行につき5%減点して選出するか。既定ON:
+    // 僅差なら全発動フラグが勝ち、未達持ちは明確に強いときだけ選ばれる（実ステには影響しない）
+    penalizeUnmetCond: true,
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
   fragFilter: { q: '', rarity: '', ownedOnly: false },
@@ -183,6 +186,12 @@ const PRESETS = {
   blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
   defense: { label: '耐久特化', weights: { hp: 0.14, strike_def: 1, blast_def: 1 } },
+  // ゲーム内メタの参考評価: 体力は高いほど良い / 打撃は射撃よりダメージが出るため
+  // 打撃攻撃と打撃防御をやや重視。補正%等価（percent）をベースに重みだけ傾ける。
+  meta: {
+    label: '実戦バランス（ゲームメタ重視）', percent: true,
+    weights: { hp: 1.15, strike_atk: 1.1, blast_atk: 0.95, strike_def: 1.15, blast_def: 0.85 },
+  },
 };
 
 // バトルスタイル → 長所を伸ばす最適化目標（提案機能）。
@@ -761,6 +770,11 @@ function renderOptimizerPanel() {
       }), 'キャラのタイプに合わせて特化（射撃特化パでも打撃タイプは打撃で組む。逆転時は通知）'),
     el('label', { class: 'check' },
       el('input', {
+        type: 'checkbox', checked: m.penalizeUnmetCond !== false,
+        onchange: (e) => { m.penalizeUnmetCond = e.target.checked; },
+      }), '条件未達の効果を持つフラグを控えめに減点する（未達1行につき−5%評価。僅差なら全発動フラグを優先。実ステには影響しません）'),
+    el('label', { class: 'check' },
+      el('input', {
         type: 'checkbox', checked: m.excludeUnmetCond === true,
         onchange: (e) => { m.excludeUnmetCond = e.target.checked; },
       }), '条件未達の効果を持つフラグを完全に除外する（⚠を無くしたい場合のみ。強フラグまで候補から消えて結果が弱くなることがあります）'),
@@ -1086,6 +1100,7 @@ async function runOptimize() {
     weights, effectMap: state.game.effectMap,
     targets: proud ? 'all' : ui.opt.targets,
     avoidUnmetCond: ui.opt.excludeUnmetCond === true,
+    unmetPenalty: ui.opt.penalizeUnmetCond !== false ? 0.95 : undefined,
   };
   const currentLeaders = proud
     ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null]
@@ -1261,6 +1276,7 @@ async function runOptimize() {
         fragmentsById: state.game.fragments, counts,
         effectMap: state.game.effectMap, context: ctxOf,
         avoidUnmetCond: ui.opt.excludeUnmetCond === true,
+        unmetPenalty: ui.opt.penalizeUnmetCond !== false ? 0.95 : undefined,
       });
       const altV = detail(alt.ids || []).stats[sw.partyStat]?.final || 0;
       if (altV > own * 1.001) {

@@ -389,7 +389,7 @@ export function fragsConflict(a, b) {
   return fragSpecies(a) === fragSpecies(b) && isAwakened(a) !== isAwakened(b);
 }
 
-function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings, avoidUnmetCond) {
+function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings, avoidUnmetCond, unmetPenalty) {
   const items = [];
   for (const frag of candidates) {
     if (isTournamentOnly(frag) && !includeTournament) continue;
@@ -397,15 +397,21 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, conte
     if (count <= 0) continue;
     const { effects, unknown, conditionalOff } = fragmentStatEffects(frag, effectMap, { stars, context });
     allWarnings.unknown.push(...unknown);
+    const unmetCount = (conditionalOff || []).length;
     // 「効果条件を満たせないフラグは選ばない」: 未達の条件付き効果を持つ候補を除外する
-    if (avoidUnmetCond && (conditionalOff || []).length > 0) continue;
+    if (avoidUnmetCond && unmetCount > 0) continue;
+    // 全発動の気持ちよさ優先: 未達の条件行1つにつき有効効果を unmetPenalty 倍に減点して評価する。
+    // 明確に強いフラグは残り、僅差なら全発動のフラグが選ばれる（既定 0.95、実ステには影響しない選定用の重みダウン）
+    const penalty = unmetCount > 0 && unmetPenalty != null && unmetPenalty < 1
+      ? Math.pow(unmetPenalty, unmetCount)
+      : 1;
     const base = new Float64Array(weightedStats.length);
     const nonBase = new Float64Array(weightedStats.length);
     let relevant = false;
     for (const e of effects) {
       const i = weightedStats.indexOf(e.stat);
       if (i < 0) continue;
-      if (e.base) base[i] += e.value; else nonBase[i] += e.value;
+      if (e.base) base[i] += e.value * penalty; else nonBase[i] += e.value * penalty;
       if (e.value !== 0) relevant = true;
     }
     if (!relevant) continue;
@@ -556,7 +562,7 @@ export function bestForCharacter(p) {
   }
   const candidates = equippableFragments(p.member.character, p.fragmentsById);
   const stars = p.member.my?.stars ?? 7;
-  const prepared = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings, p.avoidUnmetCond === true);
+  const prepared = prepareItems(candidates, p.counts, p.effectMap, weightedStats, stars, p.context, p.includeTournament === true, warnings, p.avoidUnmetCond === true, p.unmetPenalty);
   const { items, truncated } = limitItems(prepared, ctx);
   if (truncated) warnings.messages.push('候補が多いため単体スコア上位に絞って探索しました（厳密解でない可能性があります）');
   const slots = Number(p.member.my && p.member.my.equip_slots) || 3;
@@ -609,7 +615,7 @@ export function optimizeParty(p) {
       const candidates = equippableFragments(member.character, p.fragmentsById);
       const stars = member.my?.stars ?? 7;
       const context = p.contexts ? p.contexts[cid] : undefined;
-      items = prepareItems(candidates, p.counts, p.effectMap, wStats, stars, context, p.includeTournament === true, warnings, p.avoidUnmetCond === true);
+      items = prepareItems(candidates, p.counts, p.effectMap, wStats, stars, context, p.includeTournament === true, warnings, p.avoidUnmetCond === true, p.unmetPenalty);
       if (p.itemsCache) p.itemsCache[cid] = items;
     }
     const slots = Number(member.my && member.my.equip_slots) || 3;

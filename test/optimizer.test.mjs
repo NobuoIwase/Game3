@@ -518,6 +518,36 @@ test('avoidUnmetCond: 条件未達の効果を持つフラグは候補から除�
   assert.deepEqual(pick(false), ['300'], '許可すれば無条件分(+30)の高い300を選ぶ');
 });
 
+test('unmetPenalty: 未達条件行1つにつき減点し、僅差なら全発動フラグが勝つ', () => {
+  // A: 無条件+20% + 未達の条件行1つ / B: 無条件+19.5%（全発動）
+  // 減点なし → A(20 > 19.5)。0.95減点 → A=20×0.95=19 < 19.5 で B が勝つ
+  const condFrag = {
+    id: 310, name: '未達持ち', rarity: 'gold', equip_conditions: {},
+    slots: [
+      { label: 'SLOT 1', star7: false, lines: [{ text: '基礎打撃攻撃力', value: 20 }] },
+      { label: 'SLOT 2', star7: false, lines: [{ text: '打撃攻撃力', value: 10, cond: [[{ tag: 777 }]], cond_count: 1, cond_exclude_self: false, cond_scope: 'battle', cond_raw: '' }] },
+    ],
+  };
+  const clean = frag(311, [{ stat: 'strike_atk', base: true, value: 19.5 }]);
+  const member = { character: charaV2(1, [7]), my: myOf(1) };
+  const context = { selfId: 1, self: { id: 1, tags: [7] }, members: [{ id: 1, tags: [7] }] }; // タグ777は誰も持たない
+  const pick = (unmetPenalty) => bestForCharacter({
+    member, fragmentsById: { 310: condFrag, 311: clean },
+    counts: { 310: 6, 311: 6 }, weights: { strike_atk: 1 },
+    effectMap, context, unmetPenalty,
+  }).ids;
+  assert.deepEqual(pick(undefined), ['310'], '減点なしでは素点の高い未達持ちAを選ぶ');
+  assert.deepEqual(pick(0.95), ['311'], '5%減点で僅差が逆転し全発動のBを選ぶ');
+  // 明確に強いフラグは減点しても残る（+20% は +15% 相当の全発動より減点後も上）
+  const strong = frag(312, [{ stat: 'strike_atk', base: true, value: 15 }]);
+  const r2 = bestForCharacter({
+    member, fragmentsById: { 310: condFrag, 312: strong },
+    counts: { 310: 6, 312: 6 }, weights: { strike_atk: 1 },
+    effectMap, context, unmetPenalty: 0.95,
+  });
+  assert.deepEqual(r2.ids, ['310'], '明確に強い未達持ちは減点後も選ばれる');
+});
+
 test('スコアは絶対値: 多ステ重みで比率の安いステ（クリティカル等）を過大評価しない', () => {
   // 打撃25万・クリ2千のキャラ。相対スコアなら クリ+30% (0.30) > 打撃+10% (0.10) で
   // クリ側を選んでしまうが、絶対値では 打撃+25,000 >> クリ+600 で打撃側を選ぶべき
