@@ -173,8 +173,13 @@ const PRESETS = {
   strike_pure: { label: '完全打撃特化', weights: { strike_atk: 1 } },
   strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, blast_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
   balance: { label: '総合バランス', weights: { hp: 0.08, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.75, blast_def: 0.75 } },
-  // 全ステータスの合計値（❸の総和）が最も高くなる配分。体力の絶対値が大きいため体力寄りになるのは仕様
-  total: { label: '総合ステータス最大（全ステ合計）', weights: Object.fromEntries(STATS.map((s) => [s, 1])) },
+  // 「付いている補正%の合計」を最大化する（+1%はどのステータスでも等価）。
+  // percent: true のプリセットは、キャラごとに ❶ で正規化した重み（w×100000/❶）を実行時に生成する。
+  // クリティカル・気力回復は%が安く稼げて評価が荒れるため対象外（主要5ステのみ）
+  total: {
+    label: '総合強化重視（補正%の合計を最大化）', percent: true,
+    weights: { hp: 1, strike_atk: 1, blast_atk: 1, strike_def: 1, blast_def: 1 },
+  },
   blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
   defense: { label: '耐久特化', weights: { hp: 0.14, strike_def: 1, blast_def: 1 } },
@@ -508,13 +513,17 @@ function currentPartyExt(members) {
  */
 function effectiveWeightsFor(cid) {
   const base = currentWeights();
+  const member = { character: charDef(cid), my: charMy(cid) || defaultCharMy(charDef(cid)) };
+  const pctPreset = currentPercentPreset();
   const obj = charMy(cid)?.objective;
   if (obj && obj !== 'auto') {
     if (obj !== 'party' && PRESETS[obj]) {
-      return { weights: { ...PRESETS[obj].weights }, label: `個別指定: ${PRESETS[obj].label}` };
+      return { weights: materializeWeights(PRESETS[obj], member), label: `個別指定: ${PRESETS[obj].label}` };
     }
+    if (pctPreset) return { weights: materializeWeights(pctPreset, member), label: `パーティ目標（${pctPreset.label}）` };
     return { weights: base, label: 'パーティ目標（個別指定で固定）' };
   }
+  if (pctPreset) return { weights: materializeWeights(pctPreset, member), label: `パーティ目標（${pctPreset.label}）` };
   if (ui.opt.styleSplit !== false) {
     const focus = (base.strike_atk || 0) > (base.blast_atk || 0) ? 'strike'
       : (base.blast_atk || 0) > (base.strike_atk || 0) ? 'blast' : null;
@@ -765,8 +774,31 @@ function currentWeights() {
   const m = ui.opt;
   if (m.mode === 'single') return { [m.stat]: 1 };
   // 保存データに旧プリセット名（attack 等）が残っていても落ちないようフォールバック
+  // percent プリセットの場合、ここで返すのは名目値（実際の重みはキャラごとに materializeWeights で生成）
   if (m.mode === 'preset') return { ...(PRESETS[m.preset] || PRESETS.balance).weights };
   return { ...m.weights };
+}
+
+/** パーティ目標が percent プリセット（補正%合計の最大化）ならそれを返す */
+function currentPercentPreset() {
+  const m = ui.opt;
+  if (m.mode === 'preset' && PRESETS[m.preset]?.percent) return PRESETS[m.preset];
+  return null;
+}
+
+/**
+ * プリセットをキャラの実重みへ変換する。
+ * percent プリセットは「+1% = どのステータスでも等価」になるよう ❶ で正規化する
+ * （w[s] = 名目重み × 100000 ÷ ❶[s]。❶未入力のステータスは除外）。
+ */
+function materializeWeights(preset, member) {
+  if (!preset.percent) return { ...preset.weights };
+  const out = {};
+  for (const [s, w] of Object.entries(preset.weights)) {
+    const sb = statBase(member.character, member.my, s);
+    if (sb && sb.base > 0) out[s] = (w * 100000) / sb.base;
+  }
+  return out;
 }
 
 /**
@@ -1009,6 +1041,7 @@ async function runOptimize() {
   const focusOf = (w) => ((w.strike_atk || 0) > (w.blast_atk || 0) ? 'strike'
     : (w.blast_atk || 0) > (w.strike_atk || 0) ? 'blast' : null);
   const baseFocus = focusOf(weights);
+  const pctPreset = currentPercentPreset();
   const styleOverridesFor = (memList) => {
     const wById = {};
     const swapped = []; // {cid, ownStat, partyStat}
@@ -1018,7 +1051,17 @@ async function runOptimize() {
       // 'party' はパーティ目標のまま（タイプ自動入替もしない）、プリセット名なら固定の重みで組む
       const obj = charMy(cid)?.objective;
       if (obj && obj !== 'auto') {
-        if (obj !== 'party' && PRESETS[obj]) wById[cid] = { ...PRESETS[obj].weights };
+        if (obj !== 'party' && PRESETS[obj]) {
+          wById[cid] = materializeWeights(PRESETS[obj], m);
+          continue;
+        }
+        // 'party': パーティ目標に固定（percent プリセットならキャラ別重みを生成）
+        if (pctPreset) wById[cid] = materializeWeights(pctPreset, m);
+        continue;
+      }
+      // パーティ目標が percent プリセットなら全員キャラ別重み（タイプ入替は対称なので不要）
+      if (pctPreset) {
+        wById[cid] = materializeWeights(pctPreset, m);
         continue;
       }
       if (ui.opt.styleSplit === false || !baseFocus) continue;

@@ -566,3 +566,17 @@ test('奪い合い×weightsById: ❸₀正規化でHP特化キャラが複合フ
   // 複合フラグの主効果は打撃+38% → 相対改善の大きい打撃特化のAが取るべき
   assert.deepEqual(r.assignments['1'].ids, ['100'], '打撃特化のAが複合フラグを取る');
 });
+
+test('補正%重視: ❶で正規化した重みなら+1%はどのステでも等価になる', () => {
+  // 総合強化重視プリセットの実装パターン: w[s] = 100000/❶[s]
+  const member = { character: charaV1(1, [], { strike_atk: 215_217, hp: 1_626_929 }), my: myOf(1) };
+  const weights = { strike_atk: 100000 / 215_217, hp: 100000 / 1_626_929 };
+  const fragments = {
+    10: frag(10, [{ stat: 'strike_atk', base: true, value: 18 }]),
+    11: frag(11, [{ stat: 'hp', base: true, value: 7 }]),
+  };
+  const r = bestForCharacter({
+    member, fragmentsById: fragments, counts: { 10: 1, 11: 1 }, weights, effectMap,
+  });
+  assert.deepEqual(r.ids, ['10'], '%が大きい打撃+18%を選ぶ（絶対値の大きい体力+7%に負けない）');
+});
