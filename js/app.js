@@ -490,19 +490,52 @@ function fragTile(f, opts = {}) {
 
 // ---------------------------------------------------------------- 編成タブ
 
+/** 現在の編成でのアビリティ補正（編成画面・フラグ詳細で共通に使う） */
+function currentPartyExt(members) {
+  const proud = ui.party.mode === 'proud';
+  return members.length
+    ? partyAbilityCorrections({
+        members, battleIds: battleIds(), teams: proudTeams(), effectMap: state.game.effectMap,
+        leaderId: ui.party.memberIds[0] || null,
+        leaders: proud ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null] : undefined,
+      })
+    : {};
+}
+
+/**
+ * このキャラの評価に実際に使われる重みと、その由来の表示名。
+ * runOptimize と同じ優先順位: 個別指定 > パーティ目標固定 > タイプ自動入替 > パーティ目標
+ */
+function effectiveWeightsFor(cid) {
+  const base = currentWeights();
+  const obj = charMy(cid)?.objective;
+  if (obj && obj !== 'auto') {
+    if (obj !== 'party' && PRESETS[obj]) {
+      return { weights: { ...PRESETS[obj].weights }, label: `個別指定: ${PRESETS[obj].label}` };
+    }
+    return { weights: base, label: 'パーティ目標（個別指定で固定）' };
+  }
+  if (ui.opt.styleSplit !== false) {
+    const focus = (base.strike_atk || 0) > (base.blast_atk || 0) ? 'strike'
+      : (base.blast_atk || 0) > (base.strike_atk || 0) ? 'blast' : null;
+    const tags = charDef(cid)?.tags || [];
+    if ((focus === 'blast' && tags.includes(13002)) || (focus === 'strike' && tags.includes(13003))) {
+      return {
+        weights: { ...base, strike_atk: base.blast_atk || 0, blast_atk: base.strike_atk || 0 },
+        label: 'タイプ自動（打撃/射撃の重みを入替）',
+      };
+    }
+  }
+  return { weights: base, label: 'パーティ目標' };
+}
+
 function renderParty() {
   const root = $('#party-view');
   const proud = ui.party.mode === 'proud';
   const members = partyMembers();
   const bIds = battleIds();
   const teams = proudTeams();
-  const ext = members.length
-    ? partyAbilityCorrections({
-        members, battleIds: bIds, teams, effectMap: state.game.effectMap,
-        leaderId: ui.party.memberIds[0] || null,
-        leaders: proud ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null] : undefined,
-      })
-    : {};
+  const ext = currentPartyExt(members);
   const contexts = battleContexts(members);
 
   // Z/ZENKAIアビリティの関係数（◎×N。スタンダード=パーティ6体 / プラウド=チーム内）
@@ -1643,12 +1676,69 @@ function openFragSheet(fid, opts = {}) {
     const members = partyMembers();
     const ctx = battleContexts(members)[String(opts.cid)];
     const r = fragmentStatEffects(f, state.game.effectMap, { stars: my.stars ?? 7, context: ctx });
+
+    // 「なぜこのフラグ？」— 実際に使われる重み・補正での寄与と候補比較
+    const ew = effectiveWeightsFor(opts.cid);
+    const extAll = currentPartyExt(members);
+    const extM = extAll[String(opts.cid)];
+    const memberObj = members.find((x) => String(x.character.id) === String(opts.cid)) || { character: equippedBy, my };
+    const corrOf = (s) => (extM ? ((extM.z[s] || 0) + (extM.zenkai[s] || 0) + (extM.ll[s] || 0)) : 0);
+    const others = memberEquips(opts.cid)
+      .filter((x, i) => i !== opts.slotIdx && x).map(fragDef).filter(Boolean);
+    const weightedOf = (list) => {
+      const d = characterDetail({ member: memberObj, ext: extM, fragmentList: list, effectMap: state.game.effectMap, context: ctx });
+      let t = 0;
+      for (const [s, w] of Object.entries(ew.weights)) {
+        if (w > 0 && d.stats[s]) t += w * d.stats[s].final;
+      }
+      return t;
+    };
+    const baseScore = weightedOf(others);
+    const ownDelta = weightedOf([...others, f]) - baseScore;
+
+    // 候補トップ10比較（開いたときだけ計算）
+    const compareBox = el('div', {});
+    let compared = false;
+    const compareDetails = el('details', {
+      ontoggle: (e) => {
+        if (!e.target.open || compared) return;
+        compared = true;
+        const cands = Object.values(state.game.fragments)
+          .filter((x) => canEquip(equippedBy, x))
+          .filter((x) => !isTournamentOnly(x))
+          .filter((x) => !others.some((o) => String(o.id) === String(x.id) || fragsConflict(o, x)));
+        const scored = cands.map((x) => ({ x, d: weightedOf([...others, x]) - baseScore }))
+          .sort((a, b) => b.d - a.d);
+        const rank = scored.findIndex((s) => String(s.x.id) === String(f.id)) + 1;
+        compareBox.replaceChildren(...nodes(
+          el('p', { class: 'small-note' },
+            `この装備は候補 ${scored.length} 件中 第${rank || '?'}位 の寄与です（他スロットの装備は固定して比較）。`),
+          ...scored.slice(0, 10).map((s, i) => el('div', {
+            class: 'effline',
+            style: String(s.x.id) === String(f.id) ? 'font-weight:900;color:var(--accent)' : '',
+          }, `${i + 1}. ${s.x.name.slice(0, 22)} +${fmt0(s.d)}`))));
+      },
+    }, el('summary', {}, 'このスロットの候補トップ10と比較'), compareBox);
+
     equippedView = el('div', {},
       el('h3', {}, `${equippedBy.name} に装備中の効果`),
       r.effects.length
-        ? el('div', {}, r.effects.map((e2) => el('div', { class: 'effline' },
-            el('span', { class: 'ultra-cond-ok' }, `✓ ${e2.text || STAT_LABELS[e2.stat] || ''} +${fmt(e2.value, 2)}%`))))
+        ? el('div', {}, r.effects.map((e2) => {
+            // 基礎なし補正は最後に乗算されるため、❷が高いほど額面より価値が大きい（§2-5）。
+            // 誤解を防ぐため「基礎あり換算」の目安を添える
+            const note = e2.base
+              ? '（基礎）'
+              : `（基礎なし ≒ 基礎+${fmt(e2.value * (1 + corrOf(e2.stat) / 100), 0)}%相当）`;
+            return el('div', { class: 'effline' },
+              el('span', { class: 'ultra-cond-ok' }, `✓ ${STAT_LABELS[e2.stat] || e2.text || ''} +${fmt(e2.value, 2)}%`),
+              el('span', { class: 'small-note', style: 'margin-left:4px' }, note));
+          }))
         : el('p', { class: 'small-note' }, '現在発動中の計算対象効果はありません。'),
+      el('div', { class: 'effline' },
+        el('span', {}, `評価重み: ${ew.label} ／ この装備の寄与: `),
+        el('span', { class: 'ultra-cond-ok', style: 'font-weight:900' }, `+${fmt0(ownDelta)}`),
+        el('span', { class: 'small-note' }, '（重み付き最終ステ❸換算）')),
+      compareDetails,
       r.conditionalOff.length
         ? el('div', {}, r.conditionalOff.map((c) => el('div', { class: 'effline' },
             el('span', { class: 'ultra-cond-ng' }, `⚠ 条件未達: ${c.cond_raw || ''}${c.text}+${c.value}%`))))
