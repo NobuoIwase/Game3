@@ -324,3 +324,30 @@ export function conditionMatches(cond, character) {
     return false; // 未解決トークン
   }));
 }
+
+/**
+ * 条件の属性(element)条項だけを見た一致判定（◎×N の表示専用 — §23）。
+ * 属性条件は属性擬似タグ {tag:15000..15004, name:'RED'|'YEL'|'PUR'|'GRN'|'BLU'} で表現される。
+ * いずれかのORクローズで「属性トークンを1つ以上含み、その属性トークンが全て一致」なら true。
+ * タグ条項は無視する。属性トークンを持たない条件では false（保守的にフル一致のみ）。
+ * 実効果の適用判定には決して使わない（適用は conditionMatches の完全一致のみ）。
+ */
+const ELEMENT_NAMES = new Set(['RED', 'YEL', 'PUR', 'GRN', 'BLU']);
+
+export function conditionElementMatches(cond, character) {
+  if (!cond || cond.length === 0) return false;
+  const tags = character.tags || [];
+  const elements = (character.elements && character.elements.length
+    ? character.elements
+    : [character.element]).filter(Boolean).map((e) => String(e).toUpperCase());
+  const isElementToken = (tok) => tok.element != null
+    || (tok.name != null && ELEMENT_NAMES.has(String(tok.name).toUpperCase()));
+  const elementTokenMatches = (tok) => {
+    const name = String(tok.element || tok.name || '').toUpperCase();
+    return (tok.tag != null && tags.includes(tok.tag)) || elements.includes(name);
+  };
+  return cond.some((andTokens) => {
+    const elTokens = andTokens.filter(isElementToken);
+    return elTokens.length > 0 && elTokens.every(elementTokenMatches);
+  });
+}

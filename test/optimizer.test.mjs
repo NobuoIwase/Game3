@@ -326,6 +326,33 @@ test('zRelationCounts: 条件に一致する(発生源×種別)を数える。�
   assert.equal(rel['2'], 2);
 });
 
+test('zRelationCounts §23: リーダーのZアビはタグ無視で数え、ZENKAIは属性一致でも数える', async () => {
+  const { abilityCorrections } = await import('../js/optimizer.js');
+  const zOf = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  // ZENKAI条件: 「属性:YEL(擬似タグ15001) かつ タグ:42」
+  const zkYelAnd42 = [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag: 15001, name: 'YEL' }, { tag: 42 }]], effects: [{ text: '基礎打撃攻撃力', value: 35 }], unresolved: [], raw: '' }] }];
+  // L: リーダー。Zはタグ8限定（他は誰も持たない）
+  const L = { character: { ...charaV2(1, [8], {}, { z_ability: zOf(8, 30) }), element: 'GRN' }, my: myOf() };
+  // S: ZENKAI持ち（YELかつタグ42。自身は両方満たす）
+  const S = { character: { ...charaV2(2, [42, 15001], {}, { zenkai_ability: zkYelAnd42 }), element: 'YEL' }, my: myOf() };
+  // T: YELだがタグ42なし → 実効果は乗らないが◎は付く（実機表示仕様）
+  const T = { character: { ...charaV2(3, [7, 15001], {}), element: 'YEL' }, my: myOf() };
+  // U: GRNでタグ42なし → ZENKAIの◎は付かない
+  const U = { character: { ...charaV2(4, [7], {}), element: 'GRN' }, my: myOf() };
+  const rel = zRelationCounts([L, S, T, U], effectMap, { leaderId: 1 });
+  assert.equal(rel['1'], 1, 'リーダー自身: 自分のZ(タグ8✓)のみ。SのZENKAI(YEL∧42)はGRNなので付かない');
+  assert.equal(rel['2'], 2, 'S: リーダーZ(タグ無視)+自分のZENKAI');
+  assert.equal(rel['3'], 2, 'T: リーダーZ(タグ無視)+ZENKAI(属性YEL一致で表示上は関係あり)');
+  assert.equal(rel['4'], 1, 'U: リーダーZ(タグ無視)のみ');
+  // リーダー指定なしなら従来どおり
+  const rel0 = zRelationCounts([L, S, T, U], effectMap);
+  assert.equal(rel0['3'], 1, 'リーダー無し: T はZENKAI属性一致の1のみ');
+  // 実効果の適用は完全一致のみ: T(YELのみ)にはZENKAIの35%は乗らない
+  const corr = abilityCorrections([L, S, T, U], [1, 2, 3], effectMap);
+  assert.equal(corr['3'].zenkai.strike_atk, 0, 'T にZENKAI効果は適用されない（表示上の◎のみ）');
+  assert.equal(corr['2'].zenkai.strike_atk, 35, 'S(YEL∧42)には適用される');
+});
+
 test('未知の効果を持つフラグメントは計算から除外しつつ unknown で報告する', () => {
   const member = { character: charaV1(1, []), my: myOf(1) };
   const fragments = {

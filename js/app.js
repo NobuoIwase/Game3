@@ -557,15 +557,16 @@ function renderParty() {
   const contexts = battleContexts(members);
 
   // Z/ZENKAIアビリティの関係数（◎×N。スタンダード=パーティ6体 / プラウド=チーム内）
+  // リーダー（1枠目）のZアビはタグ無視で全員に数える（実機表示と一致 — §23）
   const relations = {};
   if (proud) {
     for (const range of [[0, 3], [3, 6]]) {
       const teamIds = ui.party.memberIds.slice(range[0], range[1]).filter(Boolean).map(String);
       const tm = members.filter((m) => teamIds.includes(String(m.character.id)));
-      if (tm.length) Object.assign(relations, zRelationCounts(tm, state.game.effectMap));
+      if (tm.length) Object.assign(relations, zRelationCounts(tm, state.game.effectMap, { leaderId: ui.party.memberIds[range[0]] || null }));
     }
   } else if (members.length) {
-    Object.assign(relations, zRelationCounts(members, state.game.effectMap));
+    Object.assign(relations, zRelationCounts(members, state.game.effectMap, { leaderId: ui.party.memberIds[0] || null }));
   }
   if (!ui._prevRel) ui._prevRel = {};
 
