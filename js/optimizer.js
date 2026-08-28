@@ -17,7 +17,7 @@
 // 固定の「基礎あり優先/基礎なし優先」ルールは実装しない（§2-5）。必ず ❸ を評価して比較する。
 
 import { STATS, finalStat, computeStat } from './calc.js';
-import { fragmentStatEffects, resolveAbilityGroups, conditionMatches, conditionElementMatches } from './effects.js';
+import { fragmentStatEffects, resolveAbilityGroups, conditionMatches } from './effects.js';
 
 // ---------------------------------------------------------------- 装備条件
 
@@ -27,6 +27,15 @@ import { fragmentStatEffects, resolveAbilityGroups, conditionMatches, conditionE
  * v1（手入力データ）  : equip_conditions のタグ条件で判定。
  */
 export function canEquip(character, fragment) {
+  // 変身後タグを持つキャラ（transform_tags — §24）は、サイトの解決済みキャラ一覧が
+  // 変身前後のタグを区別せず作られているため、解析済みの装備条件（equip_cond）が
+  // あれば現タグ（変身前 = transform_tags 除去済み）で装備可否を再判定する。
+  // フラグは基本的に変身前にしか付けられない（実機仕様）ので、変身後タグ頼みの装備は不可
+  if (Array.isArray(character.transform_tags) && character.transform_tags.length > 0
+      && Array.isArray(fragment.equip_cond) && fragment.equip_cond.length > 0
+      && !conditionMatches(fragment.equip_cond, character)) {
+    return false;
+  }
   if (Array.isArray(fragment.equip_char_ids) && fragment.equip_char_ids.length > 0) {
     return fragment.equip_char_ids.includes(Number(character.id));
   }
@@ -109,30 +118,19 @@ export function memberAbilityGroups({ character, my, effectMap }) {
 /**
  * Z/ZENKAIアビリティの「関係数」（ゲームの◎×N表示に相当）。
  * 対象キャラごとに、条件に一致する（発生源キャラ × 種別 z/zenkai）の組を数える。
- * 出撃Zアビリティは数えない（実機の表示仕様）。
- * 実機表示に合わせた追加ルール（§23: 実機スクショとの完全一致で確認）:
- *   1. リーダーのZアビリティはタグ無視で全員に「関係あり」と数える
- *   2. ZENKAIアビリティは属性(element)条項が一致すれば「関係あり」と数える
- *      （※実効果の適用は従来どおり タグ&属性 の完全一致のみ。あくまで表示上の関係数）
- * @param {object} [opts] { leaderId } リーダーのキャラID（スタンダード=1枠目）
+ * 出撃Zアビリティは数えない（実機の表示仕様）。リーダー特殊ルールも数えない
+ * （実機確認: リーダーのタグ無視は選出時のみで、編成画面の◎×Nには影響しない — §23）。
  * @returns {Object<string, number>} キャラID → 関係数
  */
-export function zRelationCounts(members, effectMap, opts = {}) {
-  const leaderId = opts.leaderId != null ? String(opts.leaderId) : null;
+export function zRelationCounts(members, effectMap) {
   const resolved = members.map((m) => ({ m, ab: memberAbilityGroups({ ...m, effectMap }) }));
   const out = {};
   for (const target of members) {
     const tid = String(target.character.id);
     let n = 0;
-    for (const { m: src, ab } of resolved) {
-      const leaderGive = leaderId != null && String(src.character.id) === leaderId;
+    for (const { ab } of resolved) {
       for (const kind of ['z', 'zenkai']) {
-        const groups = (ab[kind] || []).filter((g) => g.effects.length > 0);
-        if (!groups.length) continue;
-        const hit = (kind === 'z' && leaderGive) || groups.some((g) =>
-          conditionMatches(g.cond, target.character)
-          || (kind === 'zenkai' && conditionElementMatches(g.cond, target.character)));
-        if (hit) n++;
+        if ((ab[kind] || []).some((g) => g.effects.length > 0 && conditionMatches(g.cond, target.character))) n++;
       }
     }
     out[tid] = n;

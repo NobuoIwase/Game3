@@ -326,31 +326,44 @@ test('zRelationCounts: 条件に一致する(発生源×種別)を数える。�
   assert.equal(rel['2'], 2);
 });
 
-test('zRelationCounts §23: リーダーのZアビはタグ無視で数え、ZENKAIは属性一致でも数える', async () => {
-  const { abilityCorrections } = await import('../js/optimizer.js');
+test('zRelationCounts §23: ◎×Nはリーダーでも属性一致だけでも増えない（条件の完全一致のみ）', () => {
+  // 実機確認: リーダーのタグ無視は選出時のみで編成画面の◎×Nには影響しない。
+  // ZENKAI「属性∧タグ」条件は属性だけ合っても◎は付かない（同名別バリアント取り違えに注意 — §23）
   const zOf = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
-  // ZENKAI条件: 「属性:YEL(擬似タグ15001) かつ タグ:42」
   const zkYelAnd42 = [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag: 15001, name: 'YEL' }, { tag: 42 }]], effects: [{ text: '基礎打撃攻撃力', value: 35 }], unresolved: [], raw: '' }] }];
-  // L: リーダー。Zはタグ8限定（他は誰も持たない）
-  const L = { character: { ...charaV2(1, [8], {}, { z_ability: zOf(8, 30) }), element: 'GRN' }, my: myOf() };
-  // S: ZENKAI持ち（YELかつタグ42。自身は両方満たす）
+  const L = { character: { ...charaV2(1, [8], {}, { z_ability: zOf(8, 30) }), element: 'GRN' }, my: myOf() }; // 1枠目(リーダー相当)
   const S = { character: { ...charaV2(2, [42, 15001], {}, { zenkai_ability: zkYelAnd42 }), element: 'YEL' }, my: myOf() };
-  // T: YELだがタグ42なし → 実効果は乗らないが◎は付く（実機表示仕様）
-  const T = { character: { ...charaV2(3, [7, 15001], {}), element: 'YEL' }, my: myOf() };
-  // U: GRNでタグ42なし → ZENKAIの◎は付かない
-  const U = { character: { ...charaV2(4, [7], {}), element: 'GRN' }, my: myOf() };
-  const rel = zRelationCounts([L, S, T, U], effectMap, { leaderId: 1 });
-  assert.equal(rel['1'], 1, 'リーダー自身: 自分のZ(タグ8✓)のみ。SのZENKAI(YEL∧42)はGRNなので付かない');
-  assert.equal(rel['2'], 2, 'S: リーダーZ(タグ無視)+自分のZENKAI');
-  assert.equal(rel['3'], 2, 'T: リーダーZ(タグ無視)+ZENKAI(属性YEL一致で表示上は関係あり)');
-  assert.equal(rel['4'], 1, 'U: リーダーZ(タグ無視)のみ');
-  // リーダー指定なしなら従来どおり
-  const rel0 = zRelationCounts([L, S, T, U], effectMap);
-  assert.equal(rel0['3'], 1, 'リーダー無し: T はZENKAI属性一致の1のみ');
-  // 実効果の適用は完全一致のみ: T(YELのみ)にはZENKAIの35%は乗らない
-  const corr = abilityCorrections([L, S, T, U], [1, 2, 3], effectMap);
-  assert.equal(corr['3'].zenkai.strike_atk, 0, 'T にZENKAI効果は適用されない（表示上の◎のみ）');
-  assert.equal(corr['2'].zenkai.strike_atk, 35, 'S(YEL∧42)には適用される');
+  const T = { character: { ...charaV2(3, [7, 15001], {}), element: 'YEL' }, my: myOf() }; // YELだがタグ42なし
+  const rel = zRelationCounts([L, S, T], effectMap);
+  assert.equal(rel['2'], 1, 'S: 自分のZENKAI(YEL∧42完全一致)のみ。LのZ(タグ8)はタグ不一致で付かない');
+  assert.equal(rel['3'], 0, 'T: 属性YELだけではZENKAIの◎は付かない。リーダーLのZも付かない');
+});
+
+test('parseEquipConditionText: 装備条件テキストをDNFのタグ条件に解析する', async () => {
+  const { parseEquipConditionText } = await import('../tools/crawl_dblegends.mjs');
+  const map = { '神の気': 40, '射撃タイプ': 13003, '防御タイプ': 13001, 'Z 魔人ブウ編': 20010 };
+  assert.deepEqual(parseEquipConditionText('神の気', map), [[{ tag: 40, name: '神の気' }]]);
+  assert.deepEqual(
+    parseEquipConditionText('神の気 AND 射撃タイプ OR 神の気 AND 防御タイプ', map),
+    [[{ tag: 40, name: '神の気' }, { tag: 13003, name: '射撃タイプ' }],
+     [{ tag: 40, name: '神の気' }, { tag: 13001, name: '防御タイプ' }]]);
+  // 全角表記はNFKCで解決（Ｚ→Z、全角スペース→半角）
+  assert.deepEqual(parseEquipConditionText('Ｚ 魔人ブウ編', map), [[{ tag: 20010, name: 'Ｚ 魔人ブウ編' }]]);
+  assert.equal(parseEquipConditionText('未知のタグ名 AND 神の気', map), null, '1つでも未解決なら null');
+  assert.equal(parseEquipConditionText('', map), null);
+});
+
+test('canEquip §24: 変身後タグ持ちキャラは装備条件を変身前タグで再判定する', () => {
+  // GB相当: サイトの equip_char_ids には載っている(区別なし)が、神の気(40)は変身後タグ
+  const gbLike = { id: 648, tags: [7, 26, 52], transform_tags: [40] };
+  const normal40 = { id: 900, tags: [40] }; // 変身なしで神の気を持つキャラ
+  const fragKamiEquip = { id: 10, equip_char_ids: [648, 900], equip_cond: [[{ tag: 40, name: '神の気' }]] };
+  const fragKamiOrMirai = { id: 11, equip_char_ids: [648, 900], equip_cond: [[{ tag: 40 }], [{ tag: 26 }]] }; // 神の気 OR 未来
+  const fragNoCond = { id: 12, equip_char_ids: [648, 900] }; // 条件未解析 → 従来どおりリスト通り
+  assert.equal(canEquip(gbLike, fragKamiEquip), false, '神の気は変身後のみ → 装備不可');
+  assert.equal(canEquip(normal40, fragKamiEquip), true, '通常キャラはリスト通り装備可');
+  assert.equal(canEquip(gbLike, fragKamiOrMirai), true, '未来(26)側のOR条件で装備可');
+  assert.equal(canEquip(gbLike, fragNoCond), true, '条件未解析のフラグは従来どおり');
 });
 
 test('未知の効果を持つフラグメントは計算から除外しつつ unknown で報告する', () => {

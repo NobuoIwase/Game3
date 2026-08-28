@@ -402,6 +402,34 @@ export function parseEquipPage(html, id) {
   };
 }
 
+/**
+ * 装備条件テキスト（condition_text）をタグID条件（DNF: ORの配列×ANDの配列）に解析する。
+ * 例: 「神の気 AND 射撃タイプ OR 神の気 AND 防御タイプ」
+ *     → [[{tag:40},{tag:13003}],[{tag:40},{tag:13001}]]
+ * 名前はタグ・エピソード・属性・レアリティ・バトルスタイル・キャラ名の擬似タグを含む
+ * グローバルなタグ表で解決する。1つでも解決できない名前があれば null（安全側: 条件を保存しない）。
+ * 用途: 変身後タグ持ちキャラの装備可否再判定（DESIGN §24）。通常の装備可否は
+ * 従来どおりサイトの解決済み equip_char_ids を使う。
+ */
+export function parseEquipConditionText(text, tagNameToId) {
+  const t = String(text || '').replace(/[\s　]+/g, ' ').trim();
+  if (!t) return null;
+  const cond = [];
+  for (const part of t.split(/ OR /)) {
+    const clause = [];
+    for (const nameRaw of part.split(/ AND /)) {
+      const name = nameRaw.trim();
+      if (!name) return null;
+      const id = tagNameToId[name] ?? tagNameToId[name.normalize('NFKC')];
+      if (id == null) return null;
+      clause.push({ tag: id, name });
+    }
+    if (clause.length === 0) return null;
+    cond.push(clause);
+  }
+  return cond.length ? cond : null;
+}
+
 // ---------------------------------------------------------------- 一覧ページ
 
 export function parseCharacterList(html) {
@@ -735,6 +763,9 @@ async function merge() {
     // 力の大会専用フラグメント（通常バトルでは装備不可）。
     // サイトに構造化マーカーが無いため名前の接頭辞で判定し、データ側にフラグを持たせる
     if (String(e.name || '').startsWith('【力の大会】')) e.top = true;
+    // 装備条件をタグID条件に解析する（変身後タグ持ちキャラの装備可否再判定用 — §24）
+    const eqCond = parseEquipConditionText(e.condition_text, tagNameToId);
+    if (eqCond) e.equip_cond = eqCond; else delete e.equip_cond;
     fragmentsOut[id] = e;
   }
 

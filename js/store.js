@@ -92,13 +92,14 @@ export async function loadGameData() {
     try { return await fetchJSON(path); }
     catch (e) { errors.push(e.message); return fallback; }
   };
-  const [characters, fragments, effectMap, tags, config, meta] = await Promise.all([
+  const [characters, fragments, effectMap, tags, config, meta, transformTags] = await Promise.all([
     load('./game_data/characters.json', {}),
     load('./game_data/fragments.json', {}),
     load('./game_data/effect_map.json', { entries: {}, _stat_keywords: {} }),
     load('./game_data/tags.json', {}),
     load('./game_data/config.json', { known_rarities: [], asset_base: '' }),
     load('./game_data/meta.json', null),
+    load('./game_data/transform_tags.json', {}),
   ]);
   const overrides = (await idbGet('game_overrides')) || emptyOverrides();
   const merge = (fileData, over) => {
@@ -109,8 +110,18 @@ export async function loadGameData() {
     }
     return out;
   };
+  const mergedCharacters = merge(characters, overrides.characters);
+  // 変身後にのみ付与されるタグ（transform_tags.json — 手動管理の補正データ、DESIGN §24）。
+  // サイトは変身前後のタグを区別しないため、ここで tags から transform_tags へ分離する。
+  // 分離後の tags（=変身前）が装備可否・効果条件・アビリティ条件・◎×N すべての判定に使われる
+  for (const [cid, tids] of Object.entries(transformTags || {})) {
+    const ch = mergedCharacters[String(cid)];
+    if (!ch || !Array.isArray(tids) || tids.length === 0) continue;
+    ch.transform_tags = tids.map(Number);
+    ch.tags = (ch.tags || []).filter((t) => !ch.transform_tags.includes(Number(t)));
+  }
   return {
-    characters: merge(characters, overrides.characters),
+    characters: mergedCharacters,
     fragments: merge(fragments, overrides.fragments),
     tags: merge(tags, overrides.tags),
     effectMap,
