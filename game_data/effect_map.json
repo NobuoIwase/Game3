@@ -214,13 +214,15 @@
    "other": true
   },
   "体力被回復量": {
-   "other": true
+   "stat": "heal_received",
+   "base": false
   },
   "体力回復量": {
    "other": true
   },
   "被回復量": {
-   "other": true
+   "stat": "heal_received",
+   "base": false
   },
   "必殺技与ダメージ": {
    "other": true

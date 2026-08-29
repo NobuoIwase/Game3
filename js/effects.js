@@ -12,7 +12,7 @@
 //   { "other": true }                                  … ステータス計算対象外と確認済みの効果
 //                                                        （与ダメージ等。警告は出さないが計算にも入れない）
 
-import { STATS } from './calc.js';
+import { STATS, ALL_STATS } from './calc.js';
 
 /**
  * 効果名の1成分（「打撃攻撃力」「クリティカル値」「被回復量」等）を解決する。
@@ -23,10 +23,10 @@ function resolvePart(part, effectMap) {
   const entries = effectMap.entries || {};
   let p = part.trim();
   if (p.startsWith('基礎')) p = p.slice('基礎'.length); // 成分ごとの「基礎」接頭辞（例: 基礎打撃攻撃力・基礎クリティカル値）
-  if (keywords[p] && STATS.includes(keywords[p])) return { stat: keywords[p] };
+  if (keywords[p] && ALL_STATS.includes(keywords[p])) return { stat: keywords[p] };
   const e = entries[p] || entries[part.trim()];
   if (e && e.other === true) return { other: true };
-  if (e && e.stat && STATS.includes(e.stat) && !e.stats) return { stat: e.stat };
+  if (e && e.stat && ALL_STATS.includes(e.stat) && !e.stats) return { stat: e.stat };
   return null;
 }
 
@@ -43,7 +43,7 @@ export function lookupEffectName(text, effectMap) {
   if (hit) {
     if (hit.other === true) return { other: true };
     const stats = hit.stats || (hit.stat ? [hit.stat] : []);
-    if (stats.length > 0 && stats.every((s) => STATS.includes(s))) {
+    if (stats.length > 0 && stats.every((s) => ALL_STATS.includes(s))) {
       return { stats, base: hit.base === true };
     }
     return null; // entries の記述が壊れている → 未対応扱い
@@ -62,7 +62,7 @@ export function lookupEffectName(text, effectMap) {
   const keywords = effectMap._stat_keywords || {};
 
   // 単一成分。完全一致のみ（「気力回復速度」を「気力回復」に誤ヒットさせない — §6 の未対応例）
-  if (keywords[body] && STATS.includes(keywords[body])) {
+  if (keywords[body] && ALL_STATS.includes(keywords[body])) {
     return { stats: [keywords[body]], base };
   }
 
@@ -112,7 +112,7 @@ export function resolveEffect(entry, effectMap) {
     return { ok: false, reason: '数値がありません', raw: entry };
   }
   if (typeof entry.stat === 'string') {
-    if (!STATS.includes(entry.stat)) {
+    if (!ALL_STATS.includes(entry.stat)) {
       return { ok: false, reason: `未知のステータス種別「${entry.stat}」`, raw: entry };
     }
     return { ok: true, effects: [{ stat: entry.stat, base: entry.base === true, value }], other: false };

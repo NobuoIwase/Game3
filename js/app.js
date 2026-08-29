@@ -185,7 +185,13 @@ const PRESETS = {
   },
   blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
-  defense: { label: '耐久特化', weights: { hp: 0.14, strike_def: 1, blast_def: 1 } },
+  // 体力被回復量（heal_received）は擬似ステータス（§25: +1% = 重み×1,000点。
+  // 重み1で防御+0.6〜0.8%相当）。回復役がいるパーティでは耐久に直結する
+  defense: { label: '耐久特化', weights: { hp: 0.14, strike_def: 1, blast_def: 1, heal_received: 0.3 } },
+  defense_heal: {
+    label: '耐久特化（被回復量重視）',
+    weights: { hp: 0.14, strike_def: 1, blast_def: 1, heal_received: 1 },
+  },
   // ゲーム内メタの参考評価: 体力は高いほど良い / 打撃は射撃よりダメージが出るため
   // 打撃攻撃と打撃防御をやや重視。補正%等価（percent）をベースに重みだけ傾ける。
   meta: {

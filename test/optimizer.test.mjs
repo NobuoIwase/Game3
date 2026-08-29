@@ -353,6 +353,32 @@ test('parseEquipConditionText: 装備条件テキストをDNFのタグ条件に�
   assert.equal(parseEquipConditionText('', map), null);
 });
 
+test('§25 擬似ステータス: 体力被回復量を評価に組み込む（+1% = 重み×1,000点）', () => {
+  const member = { character: charaV1(1, [], { strike_def: 150_000 }), my: myOf(1) };
+  const healFrag = {
+    id: 800, name: '回復フラグ', rarity: '', equip_conditions: {},
+    slots: [{ label: 'SLOT 1', star7: false, lines: [{ text: '体力被回復量', value: 20 }] }],
+  };
+  const defFrag = frag(801, [{ stat: 'strike_def', base: true, value: 10 }]); // Δ = 0.01×150000×10 = 15,000点
+  const pick = (healW) => bestForCharacter({
+    member, fragmentsById: { 800: healFrag, 801: defFrag }, counts: { 800: 1, 801: 1 },
+    weights: { strike_def: 1, heal_received: healW }, effectMap,
+  }).ids;
+  assert.deepEqual(pick(1), ['800'], '重み1: 被回復20% = 20,000点 > 防御+10%の15,000点');
+  assert.deepEqual(pick(0.3), ['801'], '重み0.3: 被回復20% = 6,000点 < 15,000点 → 防御優先');
+  // characterDetail にも擬似ステとして載る（仮想❶=100000 × (1+20/100)）
+  const d = characterDetail({ member, fragmentList: [healFrag], effectMap: effectMap });
+  assert.equal(d.stats.heal_received.final, 120000);
+});
+
+test('§25: アビリティの体力被回復量は警告なしで extNonBase に流れる', () => {
+  const A = { character: charaV2(1, [7], {}, { z_ability: [{ id: 0, name: 'ZアビリティI',
+    groups: [{ cond: [], effects: [{ text: '体力被回復量', value: 17 }], unresolved: [], raw: '' }] }] }), my: myOf() };
+  const corr = abilityCorrections([A], [1], effectMap);
+  assert.equal(corr['1'].extNonBase.heal_received, 17);
+  assert.equal(corr['1'].warnings.length, 0, '擬似ステは未検証形式の警告を出さない');
+});
+
 test('canEquip §24: 変身後タグ持ちキャラは装備条件を変身前タグで再判定する', () => {
   // GB相当: サイトの equip_char_ids には載っている(区別なし)が、神の気(40)は変身後タグ
   const gbLike = { id: 648, tags: [7, 26, 52], transform_tags: [40] };

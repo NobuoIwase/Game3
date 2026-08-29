@@ -16,7 +16,7 @@
 // （相対値 ❸/❸₀ は絶対値の小さいステータスを過大評価するため使わない — §17）
 // 固定の「基礎あり優先/基礎なし優先」ルールは実装しない（§2-5）。必ず ❸ を評価して比較する。
 
-import { STATS, finalStat, computeStat } from './calc.js';
+import { STATS, ALL_STATS, PSEUDO_STATS, PSEUDO_STAT_BASE, finalStat, computeStat } from './calc.js';
 import { fragmentStatEffects, resolveAbilityGroups, conditionMatches } from './effects.js';
 
 // ---------------------------------------------------------------- 装備条件
@@ -152,7 +152,7 @@ export function zRelationCounts(members, effectMap) {
  */
 export function abilityCorrections(members, battleIds, effectMap, opts = {}) {
   const battleSet = new Set((battleIds || []).map(String));
-  const zero = () => Object.fromEntries(STATS.map((s) => [s, 0]));
+  const zero = () => Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
   const out = {};
   for (const m of members) {
     out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), warnings: [], unknown: [] };
@@ -163,9 +163,13 @@ export function abilityCorrections(members, battleIds, effectMap, opts = {}) {
     for (const e of effects) {
       if (e.base === false) {
         out[tid].extNonBase[e.stat] += e.value;
-        out[tid].warnings.push(
-          `${srcMember.character.name || srcMember.character.id} のアビリティ「基礎なし ${e.stat} +${e.value}%」は検証済みの計算式に無い形式のため、基礎なし補正として乗算しています（実機で要確認）`
-        );
+        // 擬似ステータス（体力被回復量など — §25）は元々%加算の効果で
+        // 基礎あり/なしの区別が無いため、未検証形式の警告は出さない
+        if (!PSEUDO_STATS.includes(e.stat)) {
+          out[tid].warnings.push(
+            `${srcMember.character.name || srcMember.character.id} のアビリティ「基礎なし ${e.stat} +${e.value}%」は検証済みの計算式に無い形式のため、基礎なし補正として乗算しています（実機で要確認）`
+          );
+        }
       } else {
         out[tid][bucket][e.stat] += e.value;
       }
@@ -233,7 +237,7 @@ export function abilityCorrections(members, battleIds, effectMap, opts = {}) {
  */
 export function partyAbilityCorrections({ members, battleIds, teams, effectMap, leaderId, leaders }) {
   if (Array.isArray(teams) && teams.length > 0) {
-    const zero = () => Object.fromEntries(STATS.map((s) => [s, 0]));
+    const zero = () => Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
     const out = {};
     for (const m of members) {
       out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), warnings: [], unknown: [] };
@@ -294,7 +298,7 @@ export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsB
       for (const g of ab.zenkai) {
         if (conditionMatches(g.cond, m.character)) add(g.effects);
       }
-      for (const s of STATS) {
+      for (const s of ALL_STATS) {
         const w = wm[s] || 0;
         if (!w || (!(corr[s] > 0) && !(nonBase[s] > 0))) continue;
         const sb = statBase(m.character, m.my, s);
@@ -318,6 +322,10 @@ export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsB
  * 3. character.base_stats = 旧形式（合計ステ）
  */
 export function statBase(character, my, stat) {
+  // 擬似ステータス（体力被回復量など）: キャラの❶を持たないため仮想❶で評価する（§25）
+  if (PSEUDO_STATS.includes(stat)) {
+    return { base: PSEUDO_STAT_BASE, boost: 0, total: PSEUDO_STAT_BASE };
+  }
   const boost = Number(my?.boost?.[stat]) || 0;
   const override = Number(my?.total_override?.[stat]) || 0;
   if (override > 0) return { base: override - boost, boost, total: override };
@@ -561,7 +569,7 @@ function enumerateCombos(items, slots, ctx, maxCombos) {
 /** v1: キャラ1体に対する最適な N 枚を選ぶ。 */
 export function bestForCharacter(p) {
   const warnings = { messages: [], unknown: [] };
-  const weightedStats = STATS.filter((s) => (p.weights[s] || 0) > 0);
+  const weightedStats = ALL_STATS.filter((s) => (p.weights[s] || 0) > 0);
   if (weightedStats.length === 0) {
     return { ids: [], score: 0, warnings: ['評価するステータスの重みがすべて 0 です'], unknown: [] };
   }
@@ -583,7 +591,7 @@ export function bestForCharacter(p) {
 /** v2: パーティ全体の最適化。フラグメントの奪い合い（所持数制約）だけがキャラ間の結合（§4-3）。 */
 export function optimizeParty(p) {
   const warnings = { messages: [], unknown: [] };
-  const weightedStats = STATS.filter((s) => (p.weights[s] || 0) > 0);
+  const weightedStats = ALL_STATS.filter((s) => (p.weights[s] || 0) > 0);
   if (weightedStats.length === 0) {
     return { assignments: {}, totalScore: 0, exact: true, ext: {}, warnings: ['評価するステータスの重みがすべて 0 です'], unknown: [] };
   }
@@ -616,7 +624,7 @@ export function optimizeParty(p) {
   const prepared = targets.map((member) => {
     const cid = String(member.character.id);
     const wAll = weightsAllFor(cid);
-    const wStats = STATS.filter((s) => (wAll[s] || 0) > 0);
+    const wStats = ALL_STATS.filter((s) => (wAll[s] || 0) > 0);
     const w = Object.fromEntries(wStats.map((s) => [s, wAll[s]]));
     const ctx = wStats.length ? makeScoreContext(member, ext[cid], w, wStats, warnings) : null;
     if (!ctx) return { cid, member, ctx: null, items: [], slots: 0 };
@@ -769,8 +777,8 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
   const stars = member.my?.stars ?? 7;
   const unknown = [];
   const conditionalOff = [];
-  const basePct = Object.fromEntries(STATS.map((s) => [s, 0]));
-  const nonBasePct = Object.fromEntries(STATS.map((s) => [s, 0]));
+  const basePct = Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
+  const nonBasePct = Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
   for (const frag of fragmentList) {
     const r = fragmentStatEffects(frag, effectMap, { stars, context });
     unknown.push(...r.unknown);
@@ -781,7 +789,7 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
     }
   }
   const stats = {};
-  for (const s of STATS) {
+  for (const s of ALL_STATS) {
     const sb = statBase(member.character, member.my, s);
     if (!sb || sb.base <= 0) continue;
     stats[s] = computeStat({

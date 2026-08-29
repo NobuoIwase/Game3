@@ -27,7 +27,18 @@ export const STAT_LABELS = {
   blast_def: '射撃防御力',
   critical: 'クリティカル',
   ki_recovery: '気力回復',
+  heal_received: '体力被回復量',
 };
+
+/**
+ * 擬似ステータス（§25）: キャラの❶を持たない%効果（体力被回復量など）を最適化の
+ * 評価対象にするための仮想ステータス。❶=PSEUDO_STAT_BASE の仮想キャラステとして
+ * ❸式に乗せる（+1% = +1,000点）。percent プリセットの正規化定数 100000 と一致させて
+ * あるので、%等価プリセットでも重みをそのまま使える。実キャラのステ表示には出さない。
+ */
+export const PSEUDO_STATS = ['heal_received'];
+export const ALL_STATS = [...STATS, ...PSEUDO_STATS];
+export const PSEUDO_STAT_BASE = 100000;
 
 /** ❶ 基本ステータス = 合計ステ − ブースト値 */
 export function baseStat(total, boost) {
