@@ -8,10 +8,11 @@ name: Update game data
 on:
   workflow_dispatch: # 管理者の手動実行用（アプリからは使わない）
   schedule:
-    # 毎日 14:30 JST (05:30 UTC) と 18:00 JST (09:00 UTC) に自動で差分取得する。
+    # 毎日 14:30 / 15:10 / 18:00 JST (05:30 / 06:10 / 09:00 UTC) に自動で差分取得する。
     # --update は一覧2ページ＋新規ページのみの取得なので参照サイトへの負荷は僅少。
     # GitHub の cron は負荷状況で数分〜1時間程度遅れることがある
     - cron: '30 5 * * *'
+    - cron: '10 6 * * *'
     - cron: '0 9 * * *'
 
 permissions:
