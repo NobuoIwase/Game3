@@ -1996,105 +1996,6 @@ function runCalc() {
 
 // ---------------------------------------------------------------- データタブ
 
-// GitHub Actions のワンタップ取り込み（§26）。
-// トークン設定済みならアプリ内から workflow_dispatch を直接起動し、完了→公開反映→
-// キャッシュ更新まで自動で進める（GitHubのページへは飛ばない）。
-const GH_REPO = 'NobuoIwase/Game3';
-const GH_WORKFLOW = 'update-data.yml';
-const GH_API = `https://api.github.com/repos/${GH_REPO}`;
-const dataUpdate = { running: false, text: '' }; // タブ再描画をまたいで進捗を保持
-
-function setUpdStatus(text) {
-  dataUpdate.text = text;
-  const elx = $('#upd-status');
-  if (elx) elx.textContent = text;
-}
-
-async function triggerDataUpdate(btn) {
-  if (dataUpdate.running) return;
-  const token = String((await store.idbGet('gh_token')) || '').trim();
-  if (!token) {
-    // フォールバック: 従来どおり GitHub の実行ページを開く
-    window.open(`https://github.com/${GH_REPO}/actions/workflows/${GH_WORKFLOW}`, '_blank');
-    setUpdStatus('トークン未設定のため GitHub を開きました。下の「初回設定」でトークンを保存すると、このボタンだけで完結するようになります（毎日早朝の自動取り込みも動いています）。');
-    return;
-  }
-  dataUpdate.running = true;
-  if (btn) btn.disabled = true;
-  const headers = {
-    'Accept': 'application/vnd.github+json',
-    'Authorization': `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  try {
-    const startedAt = Date.now();
-    const prevMeta = state.game.meta?.generated_at || '';
-    setUpdStatus('取り込みを起動しています…');
-    const res = await fetch(`${GH_API}/actions/workflows/${GH_WORKFLOW}/dispatches`, {
-      method: 'POST', headers, body: JSON.stringify({ ref: 'main' }),
-    });
-    if (res.status !== 204) {
-      throw new Error(`起動に失敗しました (HTTP ${res.status})。トークンの対象リポジトリ（${GH_REPO}）・権限（Actions: Read and write）・有効期限を確認してください。`);
-    }
-    setUpdStatus('取り込みを開始しました。完了を待っています…（通常1〜3分）');
-    let run = null;
-    for (let i = 0; ; i++) {
-      if (i >= 60) throw new Error('時間内に完了を確認できませんでした。数分後にアプリを開き直すと反映されている場合があります。');
-      await sleep(10_000);
-      const rr = await fetch(`${GH_API}/actions/workflows/${GH_WORKFLOW}/runs?per_page=1`, { headers });
-      if (!rr.ok) continue;
-      const j = await rr.json();
-      const latest = (j.workflow_runs || [])[0] || null;
-      // 直近90秒以内に作られた実行だけを「今回の実行」とみなす
-      if (!latest || new Date(latest.created_at).getTime() < startedAt - 90_000) {
-        setUpdStatus('実行の開始を待っています…');
-        continue;
-      }
-      run = latest;
-      if (run.status === 'completed') break;
-      setUpdStatus(`取り込み実行中…（${run.status === 'queued' ? '順番待ち' : '処理中'} / ${Math.round((Date.now() - startedAt) / 1000)}秒経過）`);
-    }
-    if (run.conclusion !== 'success') {
-      throw new Error(`取り込みが失敗しました（結果: ${run.conclusion || '不明'}）。時間をおいて再実行しても失敗する場合は、参照サイトの構造変更の可能性があります。`);
-    }
-    // 新データが出たかは公開 meta.json の generated_at で判定する
-    // （ワークフローは実変更が無いと meta.json をコミットしないため、変化 = 新データあり）
-    setUpdStatus('取り込み完了。公開データへの反映を確認しています…');
-    let newMeta = null;
-    for (let i = 0; i < 12; i++) {
-      try {
-        const mres = await fetch(`./game_data/meta.json?ts=${Date.now()}`, { cache: 'no-store' });
-        if (mres.ok) {
-          const m = await mres.json();
-          if (m && m.generated_at && m.generated_at !== prevMeta) { newMeta = m; break; }
-        }
-      } catch { /* 一時的な失敗は無視して再試行 */ }
-      await sleep(10_000);
-    }
-    if (!newMeta) {
-      setUpdStatus('✅ 取り込みは完了しました。新しいキャラ・フラグメントはありませんでした（データは最新です）。');
-      return;
-    }
-    setUpdStatus(`✅ 新データを検出しました（キャラ ${newMeta.characters} 体 / フラグメント ${newMeta.fragments} 件）。キャッシュを更新して反映します…`);
-    await sleep(1500);
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister()));
-    }
-    if (window.caches) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    }
-    location.reload();
-  } catch (e) {
-    setUpdStatus(`■ ${e.message}`);
-  } finally {
-    dataUpdate.running = false;
-    if (btn && btn.isConnected) btn.disabled = false;
-  }
-}
-
 function renderData() {
   const root = $('#data-view');
   let fileInput = null;
@@ -2109,53 +2010,10 @@ function renderData() {
             `キャラ ${meta.characters} 体（詳細 ${meta.characters_detailed}）/ フラグメント ${meta.fragments} 件 / タグ ${meta.tags} 件\n` +
             `取得日時: ${new Date(meta.generated_at).toLocaleString('ja-JP')}（取得元: ${meta.source}）`)
         : el('p', { class: 'hint' }, '取り込みメタ情報がありません。'),
-      el('button', {
-        class: 'btn',
-        disabled: dataUpdate.running,
-        onclick: (e) => triggerDataUpdate(e.target),
-      }, '🔄 新キャラ・新フラグを取り込む'),
-      el('p', { class: 'small-note', id: 'upd-status' }, dataUpdate.text),
       el('p', { class: 'small-note' },
-        '毎日早朝（5時ごろ）に自動でも取り込まれます。このボタンは「今すぐ」欲しいとき用で、' +
-        '取得 → 検証 → 公開 → キャッシュ更新まで自動で進みます（通常1〜3分。完了すると自動で再読み込み）。'),
-      el('details', {},
-        el('summary', {}, '初回設定: GitHubトークン（このボタンだけで完結させる設定）'),
-        el('p', { class: 'small-note', style: 'white-space:pre-line' },
-          '1. 下のリンクから Fine-grained personal access token を作成\n' +
-          `　・Repository access: 「Only select repositories」で ${GH_REPO} だけを選ぶ\n` +
-          '　・Repository permissions: 「Actions」を Read and write にする（他は不要）\n' +
-          '2. 作成されたトークン（github_pat_…）を貼り付けて保存\n' +
-          'トークンはこの端末のブラウザに保存され、GitHub API の呼び出し以外には使いません。' +
-          '他の端末でも使いたい場合は、バックアップのエクスポート時に「トークンを含める」を選んで、その端末でインポートしてください。'),
-        el('p', {}, el('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank' }, 'トークン作成ページを開く')),
-        (() => {
-          const tokenInput = el('input', { type: 'password', placeholder: 'github_pat_…', style: 'width:100%' });
-          const stateNote = el('p', { class: 'small-note' }, 'トークン: 確認中…');
-          store.idbGet('gh_token').then((t) => {
-            stateNote.textContent = t ? 'トークン: 設定済み（このボタンだけで完結します）' : 'トークン: 未設定（ボタンはGitHubのページを開きます）';
-          }).catch(() => { stateNote.textContent = 'トークン: 未設定'; });
-          return el('div', {},
-            stateNote,
-            tokenInput,
-            el('div', { class: 'row' },
-              el('button', {
-                class: 'btn', onclick: async () => {
-                  const v = tokenInput.value.trim();
-                  if (!v) { showMsg('error', '■ トークンが空です'); return; }
-                  await store.idbSet('gh_token', v);
-                  tokenInput.value = '';
-                  showMsg('ok', 'トークンを保存しました（この端末のみ）');
-                  renderData();
-                },
-              }, '保存'),
-              el('button', {
-                class: 'btn secondary', onclick: async () => {
-                  await store.idbDelete('gh_token');
-                  showMsg('ok', 'トークンを削除しました');
-                  renderData();
-                },
-              }, '削除')));
-        })())),
+        '新キャラ・新フラグメントは毎日 14:30 と 18:00（日本時間）に自動で取り込まれます' +
+        '（サーバーの混雑で多少前後することがあります）。' +
+        '反映されていないときはアプリを開き直すか、下の「キャッシュを更新」を押してください。')),
     el('div', { class: 'card' },
       el('h3', {}, '所持設定'),
       el('label', { class: 'check' },
@@ -2176,12 +2034,7 @@ function renderData() {
       el('div', { class: 'row' },
         el('button', {
           class: 'btn', onclick: async () => {
-            const hasToken = !!(await store.idbGet('gh_token'));
-            const includeToken = hasToken && confirm(
-              'データ取り込み用のGitHubトークンもバックアップに含めますか？\n\n' +
-              '含めると、他の端末でこのファイルをインポートするだけでワンタップ取り込みが使えるようになります。\n' +
-              '（トークンはこのリポジトリのActions起動しかできない限定トークンですが、ファイルの取り扱いには注意してください）');
-            const data = await store.exportAll({ includeToken });
+            const data = await store.exportAll();
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
             const a = el('a', {
               href: URL.createObjectURL(blob),
@@ -2200,9 +2053,7 @@ function renderData() {
             const obj = JSON.parse(await file.text());
             await store.importAll(obj);
             await reloadAll();
-            showMsg('ok', 'インポートしました' +
-              (typeof obj.gh_token === 'string' && obj.gh_token.trim()
-                ? '（データ取り込み用トークンもこの端末に設定しました）' : ''));
+            showMsg('ok', 'インポートしました');
           } catch (err) {
             showMsg('error', `■ インポートに失敗しました\n${err.message}`);
           }
@@ -2282,7 +2133,7 @@ function renderData() {
           },
         }, '全データ削除')),
       el('p', { class: 'small-note' },
-        'このアプリは個人利用を前提にしています。入力データはすべてこの端末に保存され、外部には送信されません。画像はデータ取得元サイトから表示時に読み込まれます。')));
+        'このアプリは仲間内での利用を前提にしています。入力データ（所持・編成）はすべて各自の端末に保存され、外部には送信されません（利用者同士でも共有されません）。画像はデータ取得元サイトから表示時に読み込まれます。')));
 }
 
 // ---------------------------------------------------------------- 起動
