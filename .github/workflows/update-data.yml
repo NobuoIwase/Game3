@@ -7,6 +7,10 @@ name: Update game data
 
 on:
   workflow_dispatch:
+  schedule:
+    # 毎日 05:00 JST (20:00 UTC) に自動で差分取得する。--update は一覧2ページ＋新規ページのみの
+    # 取得なので参照サイトへの負荷は僅少。手動ボタン（アプリ内/workflow_dispatch）も併用可
+    - cron: '0 20 * * *'
 
 permissions:
   contents: write
