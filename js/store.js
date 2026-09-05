@@ -152,15 +152,22 @@ export async function saveOverrides(overrides) {
 const EXPORT_VERSION = 1;
 
 /** JSON エクスポート（§7: my_data は復旧不能なため必須） */
-export async function exportAll() {
+export async function exportAll(opts = {}) {
   const [myData, overrides] = await Promise.all([loadMyData(), loadOverrides()]);
-  return {
+  const out = {
     app: 'dbl-fragment-optimizer',
     version: EXPORT_VERSION,
     exported_at: new Date().toISOString(),
     my_data: myData,
     game_overrides: overrides,
   };
+  // データ取り込み用GitHubトークン（§26）: 希望したときだけ含める（他端末への引き継ぎ用）。
+  // 含めたファイルの取り扱いには注意（対象リポジトリ限定・Actions権限のみの限定トークン）
+  if (opts.includeToken) {
+    const t = await idbGet('gh_token');
+    if (t) out.gh_token = String(t);
+  }
+  return out;
 }
 
 /** JSON インポート。形式が違う場合は日本語の理由付きで投げる */
@@ -176,6 +183,10 @@ export async function importAll(obj) {
   }
   await saveMyData({ ...emptyMyData(), ...obj.my_data });
   await saveOverrides({ ...emptyOverrides(), ...(obj.game_overrides || {}) });
+  // バックアップにトークンが含まれていれば、この端末にも保存する（§26）
+  if (typeof obj.gh_token === 'string' && obj.gh_token.trim()) {
+    await idbSet('gh_token', obj.gh_token.trim());
+  }
 }
 
 export async function clearAll() {

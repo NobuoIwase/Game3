@@ -2125,7 +2125,8 @@ function renderData() {
           `　・Repository access: 「Only select repositories」で ${GH_REPO} だけを選ぶ\n` +
           '　・Repository permissions: 「Actions」を Read and write にする（他は不要）\n' +
           '2. 作成されたトークン（github_pat_…）を貼り付けて保存\n' +
-          'トークンはこの端末のブラウザにのみ保存され、GitHub API の呼び出し以外には使いません（バックアップのエクスポートにも含まれません）。'),
+          'トークンはこの端末のブラウザに保存され、GitHub API の呼び出し以外には使いません。' +
+          '他の端末でも使いたい場合は、バックアップのエクスポート時に「トークンを含める」を選んで、その端末でインポートしてください。'),
         el('p', {}, el('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank' }, 'トークン作成ページを開く')),
         (() => {
           const tokenInput = el('input', { type: 'password', placeholder: 'github_pat_…', style: 'width:100%' });
@@ -2175,7 +2176,12 @@ function renderData() {
       el('div', { class: 'row' },
         el('button', {
           class: 'btn', onclick: async () => {
-            const data = await store.exportAll();
+            const hasToken = !!(await store.idbGet('gh_token'));
+            const includeToken = hasToken && confirm(
+              'データ取り込み用のGitHubトークンもバックアップに含めますか？\n\n' +
+              '含めると、他の端末でこのファイルをインポートするだけでワンタップ取り込みが使えるようになります。\n' +
+              '（トークンはこのリポジトリのActions起動しかできない限定トークンですが、ファイルの取り扱いには注意してください）');
+            const data = await store.exportAll({ includeToken });
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
             const a = el('a', {
               href: URL.createObjectURL(blob),
@@ -2194,7 +2200,9 @@ function renderData() {
             const obj = JSON.parse(await file.text());
             await store.importAll(obj);
             await reloadAll();
-            showMsg('ok', 'インポートしました');
+            showMsg('ok', 'インポートしました' +
+              (typeof obj.gh_token === 'string' && obj.gh_token.trim()
+                ? '（データ取り込み用トークンもこの端末に設定しました）' : ''));
           } catch (err) {
             showMsg('error', `■ インポートに失敗しました\n${err.message}`);
           }

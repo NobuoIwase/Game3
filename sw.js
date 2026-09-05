@@ -2,7 +2,7 @@
 // 方針: stale-while-revalidate。キャッシュがあれば即返し、裏で更新する。
 // game_data の更新を確実に反映したいときは「データ」タブの「キャッシュを更新」を使う。
 
-const CACHE = 'dbl-frag-opt-v18';
+const CACHE = 'dbl-frag-opt-v19';
 
 const PRECACHE = [
   './',
