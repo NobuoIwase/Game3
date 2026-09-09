@@ -31,13 +31,28 @@ const UA = 'personal-fragment-tool/1.0 (individual use)';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let lastFetch = 0;
-async function politeFetch(path) {
+/**
+ * @param {string} path
+ * @param {object} [opts] fresh:true で中間キャッシュを迂回する（§27）。
+ *   一覧ページは「新キャラ・新フラグの発見」そのものなので必ず最新を取る必要がある。
+ *   実際、GitHub Actions のランナーからは古い一覧（削除済みの旧スナップショット）が
+ *   返り続け、新規3体・3件を何日も発見できない事象が起きた。
+ *   詳細ページは新規URLなのでキャッシュされておらず、素のまま取得してよい（origin への負荷も軽い）。
+ */
+async function politeFetch(path, opts = {}) {
   const wait = lastFetch + DELAY_MS - Date.now();
   if (wait > 0) await sleep(wait);
   lastFetch = Date.now();
+  const headers = { 'User-Agent': UA };
+  let url = BASE + path;
+  if (opts.fresh) {
+    headers['Cache-Control'] = 'no-cache';
+    headers['Pragma'] = 'no-cache';
+    url += (path.includes('?') ? '&' : '?') + `_cb=${Date.now()}`;
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(BASE + path, { headers: { 'User-Agent': UA } });
+      const res = await fetch(url, { headers, cache: 'no-store' });
       if (res.status === 404) return { status: 404, html: null };
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { status: res.status, html: await res.text() };
@@ -833,12 +848,23 @@ async function main() {
   if (!mergeOnly) {
     // 一覧（毎回取得して新キャラ・新装備を発見する）
     console.log('一覧を取得中…');
-    const { html: charListHtml } = await politeFetch('/characters');
+    const { html: charListHtml } = await politeFetch('/characters', { fresh: true });
     const { chars, tags } = parseCharacterList(charListHtml);
-    const { html: equipListHtml } = await politeFetch('/equipment');
+    const { html: equipListHtml } = await politeFetch('/equipment', { fresh: true });
     const equipIds = parseEquipList(equipListHtml);
     if (chars.length === 0 || equipIds.length === 0) {
       console.error('■ 一覧の解析に失敗しました。ページ構造が変わった可能性があります。');
+      process.exit(1);
+    }
+    // 一覧が手元のデータより少ない = 古い一覧を掴まされている疑い（§27）。
+    // キャラ・装備がサイトから減ることは無いので、黙って「新データなし」と報告せず落とす
+    const countCached = async (dir) => (existsSync(join(CRAWL, dir))
+      ? (await readdir(join(CRAWL, dir))).filter((f) => f.endsWith('.json')).length : 0);
+    const [haveChars, haveEquips] = [await countCached('char'), await countCached('equip')];
+    if (chars.length < haveChars || equipIds.length < haveEquips) {
+      console.error(`■ 取得した一覧が手元のデータより少ないため中止しました`
+        + `（一覧: キャラ ${chars.length} / 装備 ${equipIds.length}、手元: キャラ ${haveChars} / 装備 ${haveEquips}）。`
+        + '古い一覧を返された可能性があります。時間をおいて再実行してください。');
       process.exit(1);
     }
     await writeFile(join(CRAWL, 'list.json'), JSON.stringify({ chars, tags, equipIds }, null, 1));
