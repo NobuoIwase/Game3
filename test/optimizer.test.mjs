@@ -73,11 +73,15 @@ test('statBase: 合計ステの実測オーバーライドが理論値より優�
   assert.deepEqual(r, { base: 231_537, boost: 42_080, total: 273_617 });
 });
 
-test('autoAbilityLevel: 星→アビリティレベルの既定対応（未検証の仮定・上書き可）', () => {
+test('§32 autoAbilityLevel: 実機の星→アビリティレベル対応（0-2:I / 3-5:II / 6-13:III / 14:IV）', () => {
   assert.equal(autoAbilityLevel(0), 1);
-  assert.equal(autoAbilityLevel(2), 2);
-  assert.equal(autoAbilityLevel(5), 3);
-  assert.equal(autoAbilityLevel(7), 4);
+  assert.equal(autoAbilityLevel(2), 1);
+  assert.equal(autoAbilityLevel(3), 2);
+  assert.equal(autoAbilityLevel(5), 2);
+  assert.equal(autoAbilityLevel(6), 3);
+  assert.equal(autoAbilityLevel(7), 3, '★7 は III（以前は誤って IV を使っていた）');
+  assert.equal(autoAbilityLevel(13), 3);
+  assert.equal(autoAbilityLevel(14), 4);
 });
 
 // クローラ出力相当のZアビリティ定義
@@ -88,8 +92,10 @@ const zAbility = (values) => values.map((v, i) => ({
 
 test('memberAbilityGroups: 星でZアビレベルを自動選択し、my.z_level で上書きできる', () => {
   const character = charaV2(1, [7], {}, { z_ability: zAbility([22, 26, 30, 38]) });
+  const auto14 = memberAbilityGroups({ character, my: myOf(3, { stars: 14 }), effectMap });
+  assert.equal(auto14.z[0].effects[0].value, 38, '★14 → IV');
   const auto7 = memberAbilityGroups({ character, my: myOf(3, { stars: 7 }), effectMap });
-  assert.equal(auto7.z[0].effects[0].value, 38, '★7 → IV');
+  assert.equal(auto7.z[0].effects[0].value, 30, '★7 → III');
   const auto3 = memberAbilityGroups({ character, my: myOf(3, { stars: 3 }), effectMap });
   assert.equal(auto3.z[0].effects[0].value, 26, '★3 → II');
   const forced = memberAbilityGroups({ character, my: myOf(3, { stars: 7, z_level: 1 }), effectMap });
@@ -128,14 +134,14 @@ test('abilityCorrections: 手入力アビリティ（旧形式）も合算され
 
 test('§30 手入力アビリティは raw=(手入力) で識別できる（UIが取り込みデータと区別するため）', () => {
   const character = charaV2(1, [7], {}, { z_ability: zAbility([22, 26, 30, 38]) });
-  const my = myOf(3, { z_ability: [{ stat: 'strike_atk', base: true, value: 30, condition_tags: [7] }] });
+  const my = myOf(3, { stars: 14, z_ability: [{ stat: 'strike_atk', base: true, value: 30, condition_tags: [7] }] });
   const { z } = memberAbilityGroups({ character, my, effectMap });
   const manual = z.filter((g) => g.raw === '(手入力)');
   const crawled = z.filter((g) => g.raw !== '(手入力)');
   assert.equal(manual.length, 1, '手入力分は1グループ');
   assert.equal(manual[0].effects[0].value, 30);
   assert.equal(crawled.length, 1, '取り込み分と混ざらない');
-  assert.equal(crawled[0].effects[0].value, 38, '★7なので取り込み分はIV');
+  assert.equal(crawled[0].effects[0].value, 38, '★14なので取り込み分はIV');
 });
 
 test('§2-5: ❷が高いとき、数値の小さい基礎なしが数値の大きい基礎ありに勝つ', () => {

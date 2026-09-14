@@ -56,13 +56,15 @@ export function equippableFragments(character, fragmentsById) {
 
 /**
  * 限界突破（星）からアビリティレベル(1〜4)を自動決定する。
- * 対応表は実機未検証の仮定（DESIGN.md §10-2）。キャラごとに my.z_level 等で上書きできる。
+ * 実機仕様（ユーザー確認済み — DESIGN.md §10-2 / §32）:
+ *   ★0〜2 → I / ★3〜5 → II / ★6〜13 → III / ★14 → IV
+ * キャラごとに my.z_level 等で上書きできる。
  */
 export function autoAbilityLevel(stars) {
   const s = Number(stars) || 0;
-  if (s >= 6) return 4;
-  if (s >= 4) return 3;
-  if (s >= 2) return 2;
+  if (s >= 14) return 4;
+  if (s >= 6) return 3;
+  if (s >= 3) return 2;
   return 1;
 }
 

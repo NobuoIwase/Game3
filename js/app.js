@@ -188,6 +188,12 @@ const PRESETS = {
   // 体力被回復量（heal_received）は擬似ステータス（§25: +1% = 重み×1,000点。
   // 重み1で防御+0.6〜0.8%相当）。回復役がいるパーティでは耐久に直結する
   defense: { label: '耐久特化', weights: { hp: 0.14, strike_def: 1, blast_def: 1, heal_received: 0.3 } },
+  // 耐久を主軸にしつつ攻撃も捨てない（§32）。純耐久だとZENKAIアビ持ちより
+  // 防御値だけ大きいキャラが勝ってしまい、編成として弱くなるとの指摘への対応
+  defense_total: {
+    label: '耐久特化（総合重視）',
+    weights: { hp: 0.1, strike_def: 1, blast_def: 1, strike_atk: 0.35, blast_atk: 0.35, heal_received: 0.3 },
+  },
   defense_heal: {
     label: '耐久特化（被回復量重視）',
     weights: { hp: 0.14, strike_def: 1, blast_def: 1, heal_received: 1 },
@@ -297,7 +303,12 @@ function charMy(id) { return state.my.characters[String(id)]; }
  * 星やブーストの個別カスタマイズは charMy への登録（ensureCharMy）で行い、
  * 未登録キャラは defaultCharMy（★7・ソウルブースト最大）として扱う。
  */
-function isOwned(id) { return state.my.own_all !== false || !!charMy(id); }
+function isOwned(id) {
+  const m = charMy(id);
+  // 「未所持にする」で明示的に外したキャラは、全キャラ所持が標準でも所持扱いにしない（§32）
+  if (m && m.owned === false) return false;
+  return state.my.own_all !== false || !!m;
+}
 /** カスタマイズ保存用に my 登録を保証する（未登録なら既定値で作る） */
 function ensureCharMy(id) {
   const cid = String(id);
@@ -942,9 +953,10 @@ function computeZenkaiSuggestions() {
 
   // 候補は最適化の自動選出と同じ範囲（全キャラ所持が標準／オフなら登録済みのみ）
   const cands = [];
-  const pool = state.my.own_all !== false
+  const pool = (state.my.own_all !== false
     ? Object.values(state.game.characters)
-    : Object.keys(state.my.characters || {}).map((cid) => charDef(cid)).filter(Boolean);
+    : Object.keys(state.my.characters || {}).map((cid) => charDef(cid)).filter(Boolean))
+    .filter((d) => isOwned(String(d.id)));
   for (const def of pool) {
     const cid = String(def.id);
     if (partyIds.has(cid)) continue;
@@ -1208,9 +1220,10 @@ async function runOptimize() {
   const zenkaiCandidates = autoZenkai
     ? (state.my.own_all !== false
         ? Object.values(state.game.characters)
-            .filter((d) => !battleSet.has(String(d.id)))
+            .filter((d) => !battleSet.has(String(d.id)) && isOwned(String(d.id)))
             .map((d) => ({ character: d, my: charMy(d.id) || defaultCharMy(d) }))
-        : Object.keys(state.my.characters || {}).filter((cid) => !battleSet.has(String(cid))).map(toMember).filter(Boolean))
+        : Object.keys(state.my.characters || {})
+            .filter((cid) => !battleSet.has(String(cid)) && isOwned(cid)).map(toMember).filter(Boolean))
     : [];
 
   const computingMsg = showMsg('info', '最適化を計算中…');
@@ -1744,13 +1757,15 @@ function openCharSheet(cid) {
         el('button', {
           class: 'btn danger',
           onclick: async () => {
-            if (!confirm(`${def.name} の所持登録を解除しますか？（星・ブースト入力は失われます）`)) return;
-            delete state.my.characters[cid];
+            if (!confirm(`${def.name} を未所持にしますか？（星・ブースト入力は失われ、最適化やゼンカイ枠の候補からも外れます）`)) return;
+            // 「全キャラ所持が標準」でも確実に外れるよう、削除ではなく未所持フラグを立てる（§32）
+            state.my.characters[cid] = { ...defaultCharMy(def), owned: false };
             ui.party.memberIds = ui.party.memberIds.map((x) => String(x) === cid ? '' : x);
             delete ui.party.equips[cid];
             await persistMy(); closeSheet(); renderChars(); renderParty();
+            showMsg('ok', `${def.name} を未所持にしました。`);
           },
-        }, '登録解除'))));
+        }, '未所持にする'))));
   };
   renderOwnedArea();
 
