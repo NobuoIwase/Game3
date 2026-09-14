@@ -1594,19 +1594,52 @@ function openCharSheet(cid) {
         el('td', { class: 'num big' }, sb ? fmt0(sb.total) : '—'));
     }));
 
+  // §30: 条件の中身・手入力の別・出撃Zの有効/無効まで出す。
+  // 取り込みデータと手入力が見分けられず、消し方も分からない状態だと
+  // 「身に覚えのない補正」が計算に残り続けるため
   const abilityPreview = () => {
     const { z, zenkai, deploy } = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
+    const tagLabel = (tk) => tk.name || (tk.tag != null
+      ? (state.game.tags?.[String(tk.tag)] || `タグ${tk.tag}`) : '不明');
+    const condText = (cond) => (!cond || cond.length === 0) ? ''
+      : `（条件: ${cond.map((orSet) => orSet.map(tagLabel).join('かつ')).join(' または ')}）`;
+    const inBattle = battleIds().map(String).includes(cid);
+    const hasManual = [z, zenkai, deploy].some((gs) => gs.some((g) => g.raw === '(手入力)'));
     const lines = [];
-    for (const [label, groups] of [['Zアビ（パーティ全員に）', z], ['ZENKAIアビ（パーティ全員に）', zenkai], ['出撃Zアビ（バトル3体に）', deploy]]) {
+    for (const [label, groups, note] of [
+      ['Zアビ（パーティ全員に）', z, ''],
+      ['ZENKAIアビ（パーティ全員に）', zenkai, ''],
+      ['出撃Zアビ（バトル3体に）', deploy, inBattle ? '' : ' ※バトル出撃時のみ有効（現在は未出撃）'],
+    ]) {
       for (const g of groups) {
+        const manual = g.raw === '(手入力)';
         for (const e of g.effects) {
-          lines.push(`${label}: ${e.base ? '基礎' : ''}${STAT_LABELS[e.stat]} +${e.value}%${g.cond?.length ? '（条件あり）' : ''}`);
+          lines.push({
+            manual,
+            text: `${label}${manual ? '【手入力】' : ''}: ${e.base ? '基礎' : ''}${STAT_LABELS[e.stat] || e.stat} +${e.value}%${condText(g.cond)}${note}`,
+          });
         }
       }
     }
-    return lines.length
-      ? el('div', {}, lines.map((l) => el('div', { class: 'effline' }, l)))
-      : el('p', { class: 'small-note' }, '補正アビリティなし');
+    if (lines.length === 0) return el('p', { class: 'small-note' }, '補正アビリティなし');
+    return el('div', {},
+      lines.map((l) => el('div', { class: 'effline', style: l.manual ? 'color:var(--accent)' : '' }, l.text)),
+      hasManual ? el('div', {},
+        el('p', { class: 'small-note' },
+          '【手入力】は取り込みデータではなく、このアプリに手で登録された補正です。'
+          + '身に覚えがなければ削除してください（計算にも使われています）。'),
+        el('button', {
+          class: 'btn secondary small',
+          onclick: async () => {
+            if (!confirm('このキャラの手入力アビリティ補正をすべて削除します。よろしいですか？')) return;
+            const m2 = ensureCharMy(cid);
+            m2.z_ability = []; m2.ll_ability = []; m2.zenkai_ability = [];
+            await persistMy();
+            renderParty(); renderChars();
+            openCharSheet(cid);
+            showMsg('ok', '手入力のアビリティ補正を削除しました。');
+          },
+        }, '手入力の補正を削除')) : null);
   };
 
   const ownedArea = el('div', {});

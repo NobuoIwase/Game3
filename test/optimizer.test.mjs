@@ -126,6 +126,18 @@ test('abilityCorrections: 手入力アビリティ（旧形式）も合算され
   assert.equal(ext['2'].z.strike_atk, 0, 'タグ7を持たないBには乗らない');
 });
 
+test('§30 手入力アビリティは raw=(手入力) で識別できる（UIが取り込みデータと区別するため）', () => {
+  const character = charaV2(1, [7], {}, { z_ability: zAbility([22, 26, 30, 38]) });
+  const my = myOf(3, { z_ability: [{ stat: 'strike_atk', base: true, value: 30, condition_tags: [7] }] });
+  const { z } = memberAbilityGroups({ character, my, effectMap });
+  const manual = z.filter((g) => g.raw === '(手入力)');
+  const crawled = z.filter((g) => g.raw !== '(手入力)');
+  assert.equal(manual.length, 1, '手入力分は1グループ');
+  assert.equal(manual[0].effects[0].value, 30);
+  assert.equal(crawled.length, 1, '取り込み分と混ざらない');
+  assert.equal(crawled[0].effects[0].value, 38, '★7なので取り込み分はIV');
+});
+
 test('§2-5: ❷が高いとき、数値の小さい基礎なしが数値の大きい基礎ありに勝つ', () => {
   const member = { character: charaV1(1, []), my: myOf(1) };
   const ext = { z: { strike_atk: 200 }, zenkai: {}, ll: {}, extNonBase: {}, warnings: [] };
