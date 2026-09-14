@@ -1642,6 +1642,59 @@ function openCharSheet(cid) {
         }, '手入力の補正を削除')) : null);
   };
 
+  // §31「なぜこのキャラがゼンカイ枠に選ばれたのか」をその場で確認できるようにする。
+  // バトル3体それぞれに何が乗るのか（リーダー特例による分も明示）を出す
+  const partyBenefitPreview = () => {
+    const bIds = battleIds().map(String);
+    if (bIds.length === 0 || bIds.includes(cid)) return null;
+    const leaderId = String(ui.party.memberIds[0] || '');
+    const ab = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
+    if (ab.z.length === 0 && ab.zenkai.length === 0) return null;
+    const battleMembers = bIds.map((bid) => {
+      const bdef = charDef(bid);
+      return bdef ? { character: bdef, my: charMy(bid) || defaultCharMy(bdef) } : null;
+    }).filter(Boolean);
+    const wById = {};
+    for (const m of battleMembers) wById[String(m.character.id)] = effectiveWeightsFor(String(m.character.id)).weights;
+    const sc = scoreZenkaiCandidates({
+      battleMembers, candidates: [{ character: def, my }],
+      weights: currentWeights(), weightsById: wById,
+      effectMap: state.game.effectMap, leaderId: leaderId || null,
+    });
+    const total = sc.length ? sc[0].delta : 0;
+    const rows = [];
+    for (const m of battleMembers) {
+      const bid = String(m.character.id);
+      const eff = new Map();
+      let leaderOnly = false;
+      for (const [kind, groups] of [['z', ab.z], ['zenkai', ab.zenkai]]) {
+        for (const g of groups) {
+          const matched = conditionMatches(g.cond, m.character);
+          const viaLeader = kind === 'z' && leaderId === bid && !matched;
+          if (!matched && !viaLeader) continue;
+          if (viaLeader) leaderOnly = true;
+          for (const e of g.effects) {
+            const key = `${e.base === false ? '' : '基礎'}${STAT_LABELS[e.stat] || e.stat}`;
+            eff.set(key, (eff.get(key) || 0) + e.value);
+          }
+        }
+      }
+      rows.push({ name: m.character.name, eff, leaderOnly });
+    }
+    return el('div', {},
+      el('h3', {}, 'このパーティへの恩恵（ゼンカイ枠に置いた場合）'),
+      el('div', { class: 'effline', style: 'font-weight:900' },
+        `重み換算の合計: +${fmt(total, 0)}`),
+      rows.map((r) => el('div', { class: 'effline' },
+        r.eff.size === 0
+          ? el('span', { class: 'ultra-cond-ng' }, `${r.name}: 乗らない（条件を満たさない）`)
+          : el('span', { class: 'ultra-cond-ok' },
+              `${r.name}: ${[...r.eff].map(([k, v]) => `${k}+${v}%`).join(' / ')}`
+              + (r.leaderOnly ? '　※リーダー特例（タグ無視）で乗る分を含む' : '')))),
+      el('p', { class: 'small-note' },
+        '条件に一致したバトルメンバーにだけ乗ります。リーダーは他キャラのZアビをタグ無視で受けます（§12-3）。'));
+  };
+
   const ownedArea = el('div', {});
   const renderOwnedArea = () => {
     if (!isOwned(cid)) {
@@ -1751,6 +1804,7 @@ function openCharSheet(cid) {
     ultraView(),
     el('h3', {}, 'アビリティ補正（現在の設定で有効な値）'),
     abilityPreview(),
+    partyBenefitPreview(),
     el('details', {},
       el('summary', {}, 'アビリティ原文を表示'),
       [...(def.z_ability || []), ...(def.deploy_z_ability || []), ...(def.zenkai_ability || [])].map((a) =>
