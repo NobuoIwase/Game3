@@ -270,7 +270,16 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
  *   candidates    … 候補キャラ（{character, my}。所持キャラからパーティ外を渡す想定）
  * @returns {Array<{id, delta}>} 採点降順・最大3体
  */
-export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsById, effectMap, leaderId }) {
+export function pickZenkaiMembers(p) {
+  return scoreZenkaiCandidates(p).slice(0, 3);
+}
+
+/**
+ * ゼンカイ枠候補の採点（全候補を降順で返す — §29）。
+ * pickZenkaiMembers はこの上位3体。提案カードも必ずこの関数を通し、
+ * 「自動選出」と「提案」で採点がずれないようにする。
+ */
+export function scoreZenkaiCandidates({ battleMembers, candidates, weights, weightsById, effectMap, leaderId }) {
   if (!battleMembers || battleMembers.length === 0) return [];
   const leader = leaderId != null && leaderId !== '' ? String(leaderId) : null;
   // 候補はベンチ（非出撃）なので、候補の Z/ZENKAI アビがバトル3体の補正を
@@ -311,7 +320,7 @@ export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsB
   // 恩恵が完全に同点なら ZENKAI 覚醒キャラを優先する（§28）。
   // リーダーはタグ無視で全Zアビを受けるため、Zアビの数値が同じ候補が同点で並ぶことがある
   scored.sort((a, b) => (b.delta - a.delta) || (b.zenkai - a.zenkai));
-  return scored.slice(0, 3);
+  return scored;
 }
 
 // ---------------------------------------------------------------- ステータス基礎値

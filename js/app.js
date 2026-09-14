@@ -7,7 +7,7 @@ import { sumFragmentEffects, fragmentStatEffects, lookupEffectName, conditionMat
 import {
   optimizeParty, partyAbilityCorrections, canEquip, characterDetail,
   statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
-  pickZenkaiMembers, bestForCharacter, fragsConflict,
+  pickZenkaiMembers, scoreZenkaiCandidates, bestForCharacter, fragsConflict,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -940,42 +940,72 @@ function computeZenkaiSuggestions() {
     ? ((weights.strike_atk || 0) > 0 ? '打撃' : null)
     : '射撃';
 
+  // 候補は最適化の自動選出と同じ範囲（全キャラ所持が標準／オフなら登録済みのみ）
   const cands = [];
-  for (const def of Object.values(state.game.characters)) {
+  const pool = state.my.own_all !== false
+    ? Object.values(state.game.characters)
+    : Object.keys(state.my.characters || {}).map((cid) => charDef(cid)).filter(Boolean);
+  for (const def of pool) {
     const cid = String(def.id);
     if (partyIds.has(cid)) continue;
-    const my = charMy(cid) || defaultCharMy(def);
+    cands.push({ def, my: charMy(cid) || defaultCharMy(def) });
+  }
+
+  // 恩恵は自動選出と同一のエンジンで採点する（§29）。
+  // 以前はここだけ「重み×%」の独自合算で、❶の桁差もリーダー特例も無視していたため、
+  // 実際にはステータスが1も増えないキャラが上位に並んでいた
+  const wById = {};
+  for (const m of battleMembers) {
+    const cid = String(m.character.id);
+    wById[cid] = effectiveWeightsFor(cid).weights;
+  }
+  const scored = scoreZenkaiCandidates({
+    battleMembers,
+    candidates: cands.map((c) => ({ character: c.def, my: c.my })),
+    weights, weightsById: wById,
+    effectMap: state.game.effectMap,
+    leaderId: ui.party.memberIds[0] || null,
+  });
+  const benefitOf = new Map(scored.map((x) => [String(x.id), x.delta]));
+
+  // 体力恩恵（④の並び替え用）: バトル3体に実際に乗る基礎体力%の合計
+  const hpPctOf = (def, my) => {
     const ab = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
-    let benefit = 0;
-    let hpBenefit = 0;
+    let hp = 0;
     for (const groups of [ab.z, ab.zenkai]) {
       for (const g of groups) {
         for (const m of battleMembers) {
           if (!conditionMatches(g.cond, m.character)) continue;
-          for (const e of g.effects) {
-            if (e.base === false) continue;
-            benefit += (weights[e.stat] || 0) * e.value;
-            if (e.stat === 'hp') hpBenefit += e.value;
-          }
+          for (const e of g.effects) if (e.base !== false && e.stat === 'hp') hp += e.value;
         }
       }
     }
-    const arts = def.arts || [];
+    return hp;
+  };
+
+  const rows = [];
+  for (const c of cands) {
+    const cid = String(c.def.id);
+    const arts = c.def.arts || [];
     const rare = arts.filter((a) => RARE_ARTS.has(a.type)).length;
     const focus = atkFocus ? arts.filter((a) => a.type === atkFocus).length : 0;
-    if (benefit > 0 || rare > 0 || focus > 0 || hpBenefit > 0) {
-      cands.push({ def, benefit, hpBenefit, rare, focus });
-    }
+    const benefit = benefitOf.get(cid) || 0;
+    if (benefit <= 0 && rare === 0 && focus === 0) continue;
+    rows.push({ def: c.def, benefit, rare, focus, hpBenefit: 0, my: c.my });
   }
   const hasArts = Object.values(state.game.characters).some((d) => (d.arts || []).length > 0);
   const top3 = (arr) => arr.slice(0, 3);
+  // ④は体力恩恵の計算が重いため、恩恵上位のみを対象に絞ってから並べる
+  const hpPool = [...rows].sort((a, b) => b.benefit - a.benefit).slice(0, 60);
+  for (const r of hpPool) r.hpBenefit = hpPctOf(r.def, r.my);
+  const abilityTop = top3([...rows].sort((a, b) => b.benefit - a.benefit || b.rare - a.rare));
+  const bestTotal = abilityTop.reduce((t, c) => t + c.benefit, 0);
   return {
-    hasArts,
-    atkFocus,
-    ability: top3([...cands].sort((a, b) => b.benefit - a.benefit || b.rare - a.rare)),
-    rare: top3([...cands].filter((c) => c.rare > 0).sort((a, b) => b.rare - a.rare || b.benefit - a.benefit)),
-    focus: atkFocus ? top3([...cands].filter((c) => c.focus > 0).sort((a, b) => b.focus - a.focus || b.benefit - a.benefit)) : [],
-    hp: top3([...cands].filter((c) => c.hpBenefit > 0).sort((a, b) => b.hpBenefit - a.hpBenefit || b.benefit - a.benefit)),
+    hasArts, atkFocus, bestTotal,
+    ability: abilityTop,
+    rare: top3(rows.filter((c) => c.rare > 0).sort((a, b) => b.rare - a.rare || b.benefit - a.benefit)),
+    focus: atkFocus ? top3(rows.filter((c) => c.focus > 0).sort((a, b) => b.focus - a.focus || b.benefit - a.benefit)) : [],
+    hp: top3(hpPool.filter((c) => c.hpBenefit > 0).sort((a, b) => b.hpBenefit - a.hpBenefit || b.benefit - a.benefit)),
   };
 }
 
@@ -989,34 +1019,47 @@ function renderZenkaiSuggestCard() {
       computed = true;
       const s = computeZenkaiSuggestions();
       if (!s) { box.replaceChildren(el('p', { class: 'hint' }, 'バトルメンバーを選ぶと提案できます。')); return; }
-      const row = (label, list, metric) => list.length === 0 ? null : el('div', {},
-        el('div', { class: 'item-title', style: 'margin-top:8px' }, label),
-        el('div', { style: 'display:flex;gap:6px;align-items:flex-start' },
-          el('div', { class: 'char-grid', style: 'flex:1;grid-template-columns:repeat(3, 1fr)' },
-            list.map((c) => {
-              const tile = charTile(c.def, { onclick: () => openCharSheet(String(c.def.id)) });
-              tile.append(el('div', { class: 'rel-badge' }, metric(c)));
-              return tile;
-            })),
-          el('button', {
-            class: 'btn secondary small', style: 'flex:none;align-self:center',
-            onclick: async () => {
-              const ids = list.map((c) => String(c.def.id));
-              ids.forEach((cid, i) => {
-                ensureCharMy(cid);
-                ui.party.memberIds[3 + i] = cid;
-              });
-              await persistMy();
-              ui._flashCards = true;
-              renderParty();
-              showMsg('ok', 'ゼンカイ枠に提案メンバーをセットしました。');
-            },
-          }, 'セット')));
+      // 各行の「この3体で実際にどれだけステが増えるか」を必ず併記する（§29）。
+      // アーツ枚数だけで並んだ行はステ恩恵が0のこともあるため、セット時に確認する
+      const row = (label, list, metric) => {
+        if (list.length === 0) return null;
+        const total = list.reduce((t, c) => t + (c.benefit || 0), 0);
+        const weaker = s.bestTotal > 0 && total < s.bestTotal * 0.999;
+        return el('div', {},
+          el('div', { class: 'item-title', style: 'margin-top:8px' }, label),
+          el('div', { style: 'display:flex;gap:6px;align-items:flex-start' },
+            el('div', { class: 'char-grid', style: 'flex:1;grid-template-columns:repeat(3, 1fr)' },
+              list.map((c) => {
+                const tile = charTile(c.def, { onclick: () => openCharSheet(String(c.def.id)) });
+                tile.append(el('div', { class: 'rel-badge' }, metric(c)));
+                return tile;
+              })),
+            el('button', {
+              class: 'btn secondary small', style: 'flex:none;align-self:center',
+              onclick: async () => {
+                if (weaker && !confirm(
+                  `この3体のステータス恩恵は +${fmt(total, 0)} で、最良の組み合わせ（+${fmt(s.bestTotal, 0)}）より低くなります。\n`
+                  + 'デッキのアーツ構成を優先してセットしますか？')) return;
+                const ids = list.map((c) => String(c.def.id));
+                ids.forEach((cid, i) => {
+                  ensureCharMy(cid);
+                  ui.party.memberIds[3 + i] = cid;
+                });
+                await persistMy();
+                ui._flashCards = true;
+                renderParty();
+                showMsg('ok', 'ゼンカイ枠に提案メンバーをセットしました。');
+              },
+            }, 'セット')),
+          el('p', { class: 'small-note' },
+            `この3体のステ恩恵: +${fmt(total, 0)}` + (weaker ? `（最良は +${fmt(s.bestTotal, 0)}）` : '（最良）')));
+      };
       box.replaceChildren(...nodes(
         el('p', { class: 'hint' },
-          'バトル3体への Z・ZENKAIアビリティ恩恵（現在の重み換算）と、デッキに入る所持アーツの構成から候補を挙げます。' +
+          'バトル3体への Z・ZENKAIアビリティ恩恵（最適化と同じ採点）と、デッキに入る所持アーツの構成から候補を挙げます。' +
+          'アーツ重視の行はステータスが増えないことがあるので、併記した「ステ恩恵」を見て選んでください。' +
           (s.hasArts ? '' : '（アーツデータは未取得のためアビリティ恩恵のみで並べています）')),
-        row('① アビリティ恩恵 重視', s.ability, (c) => `+${fmt(c.benefit, 0)}`),
+        row('① アビリティ恩恵 重視（最適化の自動選出と同じ）', s.ability, (c) => `+${fmt(c.benefit, 0)}`),
         row('② 必殺・特殊アーツ持ち', s.rare, (c) => `レア${c.rare}枚`),
         s.atkFocus ? row(`③ ${s.atkFocus}アーツで特化を伸ばす`, s.focus, (c) => `${s.atkFocus}${c.focus}枚`) : null,
         row('④ 体力アップの貴重な恩恵', s.hp, (c) => `HP+${fmt(c.hpBenefit, 0)}%`)));

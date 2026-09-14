@@ -480,6 +480,27 @@ test('partyAbilityCorrections: leaders 指定で null はリーダー無し（�
   assert.equal(ext['1'].z.strike_atk, 0, 'リーダー無し: タグ無視の受け取りも発生しない');
 });
 
+test('§29 scoreZenkaiCandidates: 全候補を恩恵降順で返し、pickZenkaiMembers はその上位3体', async () => {
+  const { scoreZenkaiCandidates, pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },
+    { character: charaV2(2, [7]), my: myOf() },
+    { character: charaV2(3, [7]), my: myOf() },
+  ];
+  const candidates = [10, 11, 12, 13].map((id, i) => ({
+    character: charaV2(id, [99], {}, { z_ability: zAb(7, (i + 1) * 10) }), my: myOf(),
+  }));
+  // タグが誰にも一致せず、リーダー指定も無いので恩恵ゼロ → 一覧に出ない
+  candidates.push({ character: charaV2(14, [99], {}, { z_ability: zAb(777, 99) }), my: myOf() });
+  const p = { battleMembers, candidates, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+  const all = scoreZenkaiCandidates(p);
+  assert.equal(all.length, 4, '恩恵ゼロの候補は含まない');
+  assert.deepEqual(all.map((x) => String(x.id)), ['13', '12', '11', '10'], '恩恵降順');
+  for (let i = 1; i < all.length; i++) assert.ok(all[i - 1].delta >= all[i].delta);
+  assert.deepEqual(pickZenkaiMembers(p), all.slice(0, 3), 'pick は score の上位3体そのもの');
+});
+
 test('pickZenkaiMembers: 条件一致するアビ持ちだけが選ばれ、恩恵順に並ぶ', async () => {
   const { pickZenkaiMembers } = await import('../js/optimizer.js');
   const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
