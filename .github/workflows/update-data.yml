@@ -36,22 +36,21 @@ jobs:
         run: node tools/crawl_dblegends.mjs --update
       - name: テスト
         run: npm test
-      - name: 変更があれば main にコミット
-        id: commit
+      - name: コミットして配信
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add game_data
-          # meta.json は生成時刻で毎回変わるため、それ以外に変化があるときだけコミットする
-          if ! git diff --cached --name-only | grep -qv '^game_data/meta.json$'; then
-            echo "新しいデータはありませんでした"
-            git reset -q
-            echo "changed=0" >> "$GITHUB_OUTPUT"
-          else
-            git commit -m "ゲームデータを更新（新キャラ・新フラグメントの取り込み）"
-            git push origin HEAD:main
-            echo "changed=1" >> "$GITHUB_OUTPUT"
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            exit 0
           fi
-      - name: Pages へ配信（gh-pages を更新）
-        if: steps.commit.outputs.changed == '1'
-        run: git push origin HEAD:gh-pages --force
+          # meta.json 以外に変化があれば実データの更新。meta.json だけなら
+          # 「確認したが新規なし」の記録（checked_at）を公開する — §28
+          if git diff --cached --name-only | grep -qv '^game_data/meta.json$'; then
+            git commit -m "ゲームデータを更新（新キャラ・新フラグメントの取り込み）"
+          else
+            git commit -m "データ確認（新規なし）"
+          fi
+          git push origin HEAD:main
+          git push origin HEAD:gh-pages --force

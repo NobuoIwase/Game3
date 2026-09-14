@@ -2008,7 +2008,9 @@ function renderData() {
       meta
         ? el('p', { class: 'hint' },
             `キャラ ${meta.characters} 体（詳細 ${meta.characters_detailed}）/ フラグメント ${meta.fragments} 件 / タグ ${meta.tags} 件\n` +
-            `取得日時: ${new Date(meta.generated_at).toLocaleString('ja-JP')}（取得元: ${meta.source}）`)
+            `最終更新: ${new Date(meta.generated_at).toLocaleString('ja-JP')}`
+            + (meta.checked_at ? `　/　最終確認: ${new Date(meta.checked_at).toLocaleString('ja-JP')}` : '')
+            + `\n取得元: ${meta.source}`)
         : el('p', { class: 'hint' }, '取り込みメタ情報がありません。'),
       el('p', { class: 'small-note' },
         '新キャラ・新フラグメントは毎日 14:30・15:10・18:00（日本時間）に自動で取り込まれます' +

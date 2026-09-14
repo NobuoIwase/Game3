@@ -306,9 +306,11 @@ export function pickZenkaiMembers({ battleMembers, candidates, weights, weightsB
         delta += w * sb.base * ((((corr[s] || 0) * 0.01 + 1) * ((nonBase[s] || 0) * 0.01 + 1)) - 1);
       }
     }
-    if (delta > 1e-9) scored.push({ id: c.character.id, delta });
+    if (delta > 1e-9) scored.push({ id: c.character.id, delta, zenkai: ab.zenkai.length > 0 ? 1 : 0 });
   }
-  scored.sort((a, b) => b.delta - a.delta);
+  // 恩恵が完全に同点なら ZENKAI 覚醒キャラを優先する（§28）。
+  // リーダーはタグ無視で全Zアビを受けるため、Zアビの数値が同じ候補が同点で並ぶことがある
+  scored.sort((a, b) => (b.delta - a.delta) || (b.zenkai - a.zenkai));
   return scored.slice(0, 3);
 }
 

@@ -819,17 +819,34 @@ async function merge() {
   }
 
   const sortObj = (o) => Object.fromEntries(Object.entries(o).sort((a, b) => b[1] - a[1]));
+  // 「最終更新(generated_at)」と「最終確認(checked_at)」を分ける（§28）。
+  // データが変わらない日が続いても、自動更新が生きていることを画面から確認できるようにする
+  const bodies = {
+    'characters.json': JSON.stringify(charactersOut) + '\n',
+    'fragments.json': JSON.stringify(fragmentsOut) + '\n',
+    'tags.json': JSON.stringify(tags, null, 1) + '\n',
+  };
+  let dataChanged = false;
+  for (const [name, body] of Object.entries(bodies)) {
+    let prev = null;
+    try { prev = await readFile(join(ROOT, 'game_data', name), 'utf8'); } catch { /* 初回 */ }
+    if (prev !== body) dataChanged = true;
+  }
+  let prevMeta = {};
+  try { prevMeta = JSON.parse(await readFile(join(ROOT, 'game_data', 'meta.json'), 'utf8')); } catch { /* 初回 */ }
+  const nowIso = new Date().toISOString();
   await writeFile(join(ROOT, 'game_data', 'meta.json'), JSON.stringify({
     source: BASE,
-    generated_at: new Date().toISOString(),
+    generated_at: (dataChanged || !prevMeta.generated_at) ? nowIso : prevMeta.generated_at,
+    checked_at: nowIso,
     characters: Object.keys(charactersOut).length,
     characters_detailed: Object.keys(chars).length,
     fragments: Object.keys(fragmentsOut).length,
     tags: Object.keys(tags).length,
   }, null, 1) + '\n');
-  await writeFile(join(ROOT, 'game_data', 'characters.json'), JSON.stringify(charactersOut) + '\n');
-  await writeFile(join(ROOT, 'game_data', 'fragments.json'), JSON.stringify(fragmentsOut) + '\n');
-  await writeFile(join(ROOT, 'game_data', 'tags.json'), JSON.stringify(tags, null, 1) + '\n');
+  for (const [name, body] of Object.entries(bodies)) {
+    await writeFile(join(ROOT, 'game_data', name), body);
+  }
   await writeFile(join(ROOT, 'game_data', 'effect_lines_report.json'),
     JSON.stringify({ equip_lines: sortObj(freq), ability_lines: sortObj(abilityFreq) }, null, 1) + '\n');
   console.log(`マージ完了: キャラ ${Object.keys(charactersOut).length} 体（詳細取得済 ${Object.keys(chars).length}） / 装備 ${Object.keys(fragmentsOut).length} 件 / タグ ${Object.keys(tags).length} 件`);
@@ -870,11 +887,35 @@ async function main() {
     await writeFile(join(CRAWL, 'list.json'), JSON.stringify({ chars, tags, equipIds }, null, 1));
     console.log(`キャラ ${chars.length} 体 / 装備 ${equipIds.length} 件`);
 
+    // 既存キャラページの再取得（§28）。--update は「未取得のページ」しか見ないため、
+    // 後から ZENKAI 覚醒が追加された・アビリティが強化された既存キャラを永久に取りこぼす。
+    //   a) 一覧が「ZENKAI覚醒あり」と言っているのに手元に ZENKAI アビが無いキャラ → 即再取得
+    //   b) 巡回再取得 → 毎回少しずつ取り直し、全キャラが数週間で一巡する
+    const refresh = new Set();
+    for (const c of chars) {
+      const cp = join(CRAWL, 'char', `${c.id}.json`);
+      if (!existsSync(cp)) continue;
+      try {
+        const cached = JSON.parse(await readFile(cp, 'utf8'));
+        if (c.zenkai && !(cached.zenkai_ability || []).length) refresh.add(String(c.id));
+      } catch { refresh.add(String(c.id)); }
+    }
+    const zenkaiGap = refresh.size;
+    const roll = Number(process.env.DBL_ROLL ?? 12);
+    if (roll > 0 && chars.length > 0) {
+      const slot = Math.floor(Date.now() / (8 * 3600 * 1000)); // 実行ごとに窓をずらす
+      for (let i = 0; i < roll; i++) refresh.add(String(chars[((slot * roll) + i) % chars.length].id));
+    }
+    if (refresh.size) {
+      console.log(`既存キャラの再取得: ${refresh.size} 体（うちZENKAI覚醒の取りこぼし ${zenkaiGap} 体）`);
+    }
+
     const failures = [];
     const work = [
       ...chars.map((c) => ({ kind: 'char', id: c.id, path: `/character/${c.id}`, parse: parseCharacterPage })),
       ...equipIds.map((id) => ({ kind: 'equip', id, path: `/equip/${id}`, parse: parseEquipPage })),
-    ].filter((w) => !existsSync(join(CRAWL, w.kind, `${w.id}.json`)));
+    ].filter((w) => !existsSync(join(CRAWL, w.kind, `${w.id}.json`))
+      || (w.kind === 'char' && refresh.has(String(w.id))));
     console.log(`未取得 ${work.length} ページ（間隔 ${DELAY_MS}ms、推定 ${Math.round(work.length * DELAY_MS / 60000)} 分）`);
 
     let done = 0;
