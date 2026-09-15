@@ -362,11 +362,18 @@ function isOwned(id) {
   if (m && m.owned === false) return false;
   return state.my.own_all !== false || !!m;
 }
-/** カスタマイズ保存用に my 登録を保証する（未登録なら既定値で作る） */
+/**
+ * カスタマイズ保存用に my 登録を保証する（未登録なら既定値で作る）。
+ * 既存エントリも既定値で埋め直す: インポートしたファイルや古い版のデータには
+ * boost などのキーが欠けていることがあり、欠けたまま使うと詳細画面が落ちる（§34）
+ */
 function ensureCharMy(id) {
   const cid = String(id);
-  if (!state.my.characters[cid]) state.my.characters[cid] = defaultCharMy(charDef(cid));
-  return state.my.characters[cid];
+  const def = defaultCharMy(charDef(id));
+  const cur = state.my.characters[cid];
+  if (!cur) { state.my.characters[cid] = def; return def; }
+  for (const [k, v] of Object.entries(def)) if (cur[k] === undefined || cur[k] === null) cur[k] = v;
+  return cur;
 }
 const zeroStats = () => Object.fromEntries(STATS.map((s) => [s, 0]));
 
@@ -694,7 +701,7 @@ function renderParty() {
       el('div', { class: 'portrait', onclick: () => openCharSheet(cid) }, lazyImg(m.character.image, m.character.name)),
       el('div', { class: 'm-body' },
         el('div', { class: 'm-name' }, m.character.name,
-          (m.character.ultra_ability || []).length ? el('span', { class: 'ultra-badge', style: 'margin-left:4px' }, 'ULTRA') : null,
+          m.character.rarity === 'ULTRA' ? el('span', { class: 'ultra-badge', style: 'margin-left:4px' }, 'ULTRA') : null,
           memberBadge(cid)),
         el('div', { class: 'm-sub', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap' },
           m.character.card_no,
@@ -1321,9 +1328,9 @@ async function runOptimize() {
   // ULTRA優先タイブレーク（スタンダードのみ）: ❸合計が最良の 0.5% 以内なら、
   // ULTRAアビリティ（与ダメ等・❸に乗らない）が発動するULTRAキャラのリーダーを優先する
   let ultraLeaderNote = '';
-  if (!proud && !(charDef(best.leaders[0])?.ultra_ability || []).length) {
+  if (!proud && charDef(best.leaders[0])?.rarity !== 'ULTRA') {
     const ultraCand = leaderResults
-      .filter((x) => (charDef(x.leaders[0])?.ultra_ability || []).length && x.abs >= best.abs * 0.995)
+      .filter((x) => charDef(x.leaders[0])?.rarity === 'ULTRA' && x.abs >= best.abs * 0.995)
       .sort((a, b) => b.abs - a.abs)[0];
     if (ultraCand) {
       const loss = best.abs > 0 ? ((1 - ultraCand.abs / best.abs) * 100) : 0;
@@ -1422,7 +1429,7 @@ async function runOptimize() {
   if (!proud) {
     for (const bid of bIds) {
       const d = charDef(bid);
-      if (!(d?.ultra_ability || []).length) continue;
+      if (d?.rarity !== 'ULTRA') continue;
       if (String(ui.party.memberIds[0]) === String(bid)) continue;
       showMsg('info', `■ ${d.name} はULTRAアビリティ持ちです。リーダー枠に置くか参照タグのキャラを編成すると発動・強化されます（キャラ詳細で内容を確認できます。与ダメージ等のため❸の比較には含まれません）。`);
     }
@@ -1850,15 +1857,20 @@ function openCharSheet(cid) {
   };
   renderOwnedArea();
 
-  // ULTRAアビリティ（レアリティULTRAのみ）。与ダメージ等の戦闘効果で ❸ には乗らないため
-  // 原文＋参照タグの編成充足状況を表示し、リーダー/同タグ編成の判断材料にする
+  // ユニーク系アビリティ（データ上のフィールド名は ultra_ability だが、
+  // 中身はスターターアビリティ・ユニークアビリティ・特殊カバーチェンジ・ユニークゲージ等で
+  // 全キャラが持つ。ULTRA固有ではないので、見出しはレアリティで切り替える — §34）。
+  // 与ダメージ等の戦闘効果で ❸ には乗らないため、原文＋参照タグの編成充足状況を表示する
   const ultraView = () => {
     const list = def.ultra_ability || [];
     if (!list.length) return null;
+    const isUltra = def.rarity === 'ULTRA';
     const bSet = new Set(battleIds().map(String));
     const battleMembers = partyMembers().filter((m) => bSet.has(String(m.character.id)));
     return el('div', {},
-      el('h3', {}, el('span', { class: 'ultra-badge' }, 'ULTRA'), ' ウルトラアビリティ'),
+      isUltra
+        ? el('h3', {}, el('span', { class: 'ultra-badge' }, 'ULTRA'), ' ウルトラアビリティ')
+        : el('h3', {}, 'ユニークアビリティ'),
       el('p', { class: 'small-note' },
         '与ダメージ・気力回復などの戦闘効果のためステータス計算(❸)には含まれません。' +
         'リーダー枠に置く、または参照タグのキャラを編成すると強化される効果です。'),

@@ -720,7 +720,11 @@ async function merge() {
       zenkai: meta.zenkai,
       lf: meta.lf || detail?.ll || false,
       image: detail?.image || '',
-      tags: detail?.tags?.length ? detail.tags : meta.tags,
+      // タッグキャラ・変身キャラはサイト側が「人数（形態）ぶん」タグを並べるため
+      // 同じタグが2回出る（例: ドーレ＆ネイズ = 男/SPARKING/劇場版編… ×2）。
+      // 判定はすべて includes（集合）なので数値には影響しないが、素のまま持つと
+      // キャラ詳細のタグ表示が重複するので、ここで重複を落とす（§34）
+      tags: [...new Set(detail?.tags?.length ? detail.tags : meta.tags)],
       stats: detail?.stats || Object.fromEntries(STATS.map((s) => [s, 0])),
       soul_max: detail?.soul_max || Object.fromEntries(STATS.map((s) => [s, 0])),
       z_ability: detail?.z_ability || [],

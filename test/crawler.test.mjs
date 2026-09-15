@@ -249,3 +249,35 @@ test('parseConditionalSlot: 1スロット内の連続する複数条件文をそ
   assert.equal(r[1].value, 10);
   assert.equal(r[1].value_min, 6);
 });
+
+// §34: タッグキャラ・変身キャラはサイト側が「人数（形態）ぶん」タグを並べるため
+// 同じタグが複数回出る。判定は全て includes（集合）なので数値には影響しないが、
+// 生成データに重複を残すとキャラ詳細のタグ表示が重複する。
+test('§34 生成済み characters.json にタグの重複が無い', async () => {
+  const { readFileSync } = await import('node:fs');
+  const chars = JSON.parse(readFileSync(new URL('../game_data/characters.json', import.meta.url), 'utf8'));
+  const dup = Object.values(chars)
+    .filter((c) => c && c.id)
+    .filter((c) => new Set((c.tags || []).map(String)).size !== (c.tags || []).length);
+  assert.deepEqual(dup.map((c) => `${c.card_no} ${c.name}`), [], 'タグが重複しているキャラ');
+});
+
+// §34: ultra_ability は「ユニーク系アビリティ」で全レアリティが持つ。
+// これを ULTRA の判定に使うと全キャラが ULTRA 扱いになる（実際にそうなっていた）。
+test('§34 ultra_ability は ULTRA 専用ではない（レアリティ判定に使えない）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const chars = JSON.parse(readFileSync(new URL('../game_data/characters.json', import.meta.url), 'utf8'));
+  const list = Object.values(chars).filter((c) => c && c.id);
+  const nonUltraWithAbility = list.filter((c) => c.rarity !== 'ULTRA' && (c.ultra_ability || []).length);
+  assert.ok(nonUltraWithAbility.length > 100,
+    `ULTRA以外でも ultra_ability を持つ（${nonUltraWithAbility.length}体）。バッジ・タイブレークは rarity で判定すること`);
+});
+
+// §34: タッグキャラは2属性を持ち、どちらの属性条件でも効果が乗る（実機どおり）。
+test('§34 タッグキャラは elements に2属性を持つ', async () => {
+  const { readFileSync } = await import('node:fs');
+  const chars = JSON.parse(readFileSync(new URL('../game_data/characters.json', import.meta.url), 'utf8'));
+  const dore = Object.values(chars).find((c) => c && c.card_no === 'DBL99-03S');
+  assert.deepEqual(dore.elements, ['GRN', 'RED'], 'ドーレ＆ネイズは GRN+RED');
+  assert.equal(dore.element, 'GRN', 'element 単体は代表色');
+});
