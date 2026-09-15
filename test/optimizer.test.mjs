@@ -753,3 +753,30 @@ test('§36 balance: 候補が少ない・恩恵ゼロでも安全に返す', asy
   const r = pickZenkaiMembers({ ...p, candidates: few, balance: true });
   assert.ok(Array.isArray(r) && r.length <= 3);
 });
+
+// §36-6: 偏りの原因は「1枠あたりの取り分」ではなく「狙える候補の数」。
+// 1枠あたりが互角でも、狙える候補が多い側に合計最大化が寄ることを固定する。
+test('§36-6 1枠あたり互角でも、候補数が多いメンバーに合計最大化は寄る', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zen = (tag, value) => [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },   // タグ7 = 狙える候補が多い側
+    { character: charaV2(2, [8]), my: myOf() },   // タグ8 = 候補が少ない側
+    { character: charaV2(3, [9]), my: myOf() },
+  ];
+  // タグ7を狙う候補5体 / タグ8を狙う候補1体。1枠あたりの価値はほぼ互角（40 vs 39）
+  const candidates = [
+    ...[10, 11, 12, 13, 14].map((id) => ({ character: charaV2(id, [99], {}, { zenkai_ability: zen(7, 40) }), my: myOf() })),
+    { character: charaV2(20, [99], {}, { zenkai_ability: zen(8, 39) }), my: myOf() },
+    { character: charaV2(21, [99], {}, { zenkai_ability: zen(9, 39) }), my: myOf() },
+  ];
+  const p = { battleMembers, candidates, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+
+  const total = pickZenkaiMembers(p).map((x) => String(x.id));
+  assert.deepEqual(total.filter((id) => ['20', '21'].includes(id)), [],
+    '合計最大化は、1枠あたりわずかに劣るだけの「他メンバー向け」候補を採らない');
+
+  const bal = pickZenkaiMembers({ ...p, balance: true }).map((x) => String(x.id));
+  assert.ok(bal.includes('20') && bal.includes('21'),
+    'バランスは候補が少ないメンバー向けの候補を拾う');
+});
