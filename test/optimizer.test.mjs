@@ -960,3 +960,64 @@ test('§42 候補プールから外れた強いキャラは選ばれない（採
   const worstPicked = Math.min(...pickZenkaiMembers({ ...p, candidates: weak }).map((x) => x.delta));
   assert.ok(outside[0].delta > worstPicked, 'プール外の方が強いことを検出できる');
 });
+
+// §43: ULTRAアビリティ「力の共鳴」
+test('§43 力の共鳴: リーダーなら固定値、そうでなければタグ人数×N%', async () => {
+  const { resonanceOf, resonanceEffect } = await import('../js/optimizer.js');
+  const ultra = (text, tag, name) => [{ id: 1, name: `力の共鳴(${name})`, text, ref_tags: [{ name, tag, enemy: false }] }];
+  const TXT = '▼リーダーの場合\r\n○与ダメージ30%(消去不可)\r\n○気力回復速度30%(消去不可)\r\n\r\n'
+    + '▼リーダーではない場合、バトル／サポートメンバーの合体戦士 1人につき\r\n'
+    + '○与ダメージ5%ずつ(消去不可)\r\n○気力回復速度5%ずつ(消去不可)';
+  const hero = charaV2(1, [39], {}, { ultra_ability: ultra(TXT, 39, '合体戦士') });
+  const r = resonanceOf(hero, effectMap);
+  assert.equal(r.tag, 39);
+  assert.equal(r.leaderPct, 30, 'リーダー節の30%を拾う');
+  assert.equal(r.perPct, 5, '非リーダー節の5%ずつを拾う（30と取り違えない）');
+
+  const members = [
+    { character: hero, my: myOf() },
+    { character: charaV2(2, [39]), my: myOf() },   // 合体戦士
+    { character: charaV2(3, [39]), my: myOf() },   // 合体戦士
+    { character: charaV2(4, [99]), my: myOf() },   // 対象外
+  ];
+  const asLeader = resonanceEffect(hero, members, '1', effectMap);
+  assert.equal(asLeader.isLeader, true);
+  assert.equal(asLeader.pct, 30, 'リーダーなら人数に関係なく固定');
+  const asMember = resonanceEffect(hero, members, '2', effectMap);
+  assert.equal(asMember.isLeader, false);
+  assert.equal(asMember.count, 3, '自身を含む合体戦士3人');
+  assert.equal(asMember.pct, 15, '3人 × 5%');
+});
+
+test('§43 力の共鳴の与ダメージはスコアに乗り、❸は汚さない', async () => {
+  const { partyAbilityCorrections, characterDetail } = await import('../js/optimizer.js');
+  const TXT = '▼リーダーの場合\r\n○与ダメージ30%\r\n\r\n▼リーダーではない場合、バトル／サポートメンバーの合体戦士 1人につき\r\n○与ダメージ5%ずつ';
+  const ua = [{ id: 1, name: '力の共鳴(合体戦士)', text: TXT, ref_tags: [{ name: '合体戦士', tag: 39, enemy: false }] }];
+  const hero = charaV2(1, [39], {}, { ultra_ability: ua });
+  const members = [
+    { character: hero, my: myOf() },
+    { character: charaV2(2, [39]), my: myOf() },
+  ];
+  const ext = partyAbilityCorrections({ members, battleIds: [1, 2], effectMap, leaderId: '2' });
+  assert.equal(ext['1'].damage.strike_atk, 10, '合体戦士2人 × 5% が damage へ');
+  assert.equal(ext['1'].damage.blast_atk, 10, '「与ダメージ」は打撃・射撃の両方に乗る');
+  assert.equal(ext['1'].extNonBase.strike_atk, 0, '表示用の基礎なしバケツは汚さない');
+  const d = characterDetail({ member: members[0], ext: ext['1'], fragmentList: [], effectMap, context: null });
+  const plain = characterDetail({ member: members[0], ext: null, fragmentList: [], effectMap, context: null });
+  assert.equal(d.stats.strike_atk.final, plain.stats.strike_atk.final, '❸（ステータス表示）は変わらない');
+  assert.equal(d.stats.strike_atk.damagePct, 10, '与ダメージとして別枠で出る');
+});
+
+// §43: プリセットの意味変更（反対側の攻撃は計上しない）
+test('§43 打撃/射撃の「総合重視」は反対側の攻撃を計上しない', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const strike = src.match(/strike_total: \{ label: '打撃特化（総合重視）', weights: \{([^}]+)\}/)[1];
+  const blast = src.match(/blast_total: \{ label: '射撃特化（総合重視）', weights: \{([^}]+)\}/)[1];
+  assert.match(strike, /blast_atk:\s*0\b/, '打撃特化では射撃攻撃を0にする');
+  assert.match(blast, /strike_atk:\s*0\b/, '射撃特化では打撃攻撃を0にする');
+  for (const w of [strike, blast]) {
+    assert.match(w, /strike_def:\s*0\.9/, '防御は引き上げる');
+    assert.match(w, /hp:\s*0\.09/, '体力も引き上げる');
+  }
+});

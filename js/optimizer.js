@@ -294,10 +294,32 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
       // leaders 省略時のみ各チーム先頭へフォールバックする
       const teamLeader = leaders ? (leaders[i] ?? null) : teamIds[0];
       Object.assign(out, abilityCorrections(teamMembers, teamIds, effectMap, { leaderId: teamLeader }));
+      applyResonance(out, teamMembers, teamLeader, effectMap);
     });
     return out;
   }
-  return abilityCorrections(members, battleIds, effectMap, { leaderId });
+  const out = abilityCorrections(members, battleIds, effectMap, { leaderId });
+  applyResonance(out, members, leaderId, effectMap);
+  return out;
+}
+
+/**
+ * ULTRAアビリティ「力の共鳴」の与ダメージを damage バケツへ足す（§43）。
+ * 与ダメージは §37 の乗算チャンネルなので、ステータス表示(❸)は汚さずスコアにだけ効く。
+ * 気力回復速度ぶんはステータスではない（effect_map で other）ため加えない。
+ */
+function applyResonance(out, members, leaderId, effectMap) {
+  if (!effectMap?._ultra_resonance) return;
+  for (const m of members) {
+    const cid = String(m.character.id);
+    if (!out[cid]) continue;
+    const e = resonanceEffect(m.character, members, leaderId, effectMap);
+    if (!e || !(e.pct > 0)) continue;
+    // 「与ダメージ」（無印）は打撃・射撃の両方に乗る（§37 の effect_map 定義と揃える）
+    out[cid].damage.strike_atk += e.pct;
+    out[cid].damage.blast_atk += e.pct;
+    out[cid].resonance = e;
+  }
 }
 
 /**
@@ -1139,4 +1161,74 @@ export function theoreticalMax({
     method: `全${list.length}体をリーダーに置いた場合の❷を算出し、上位${topN}体だけフラグメントを厳密最適化した概算`
       + '（与ダメージはステータス画面に出ないため計算から除外）',
   };
+}
+
+// ---------------------------------------------------------------- §43 ULTRAアビリティ「力の共鳴」
+
+/**
+ * 「力の共鳴」（ULTRAアビリティ）の中身を読む（§43）。パターンは effect_map に置く（§1-3）。
+ *
+ * 実機の仕様（データで確認した2表記・全31体）:
+ *   リーダーの場合            … 与ダメージ／気力回復速度を固定値アップ（多くは30%）
+ *   リーダーではない場合      … バトル／サポートメンバーの「指定タグ」1人につき N%ずつ
+ *   （旧EVT版の一部はリーダー節が無く、人数×N%＋上限だけ）
+ *
+ * @returns {{tag:number|null, tagName:string, leaderPct:number, perPct:number, capPct:number}|null}
+ */
+export function parseResonance(ultraAbility, effectMap) {
+  const def = effectMap?._ultra_resonance;
+  if (!def || !ultraAbility) return null;
+  const name = String(ultraAbility.name || '');
+  if (!name.includes(def.name)) return null;
+  const text = String(ultraAbility.text || '').replace(/\r\n/g, '\n');
+  const num = (pat, src) => {
+    if (!pat) return 0;
+    try { const m = String(src).match(new RegExp(pat)); return m ? Number(m[1]) || 0 : 0; }
+    catch { return 0; }
+  };
+  const hasLeader = def.leader_marker ? new RegExp(def.leader_marker).test(text) : false;
+  // リーダー節と非リーダー節に切り分けてから数値を拾う（混ざると 30 と 5 を取り違える）
+  let leaderPart = '', restPart = text;
+  if (hasLeader && def.not_leader_marker) {
+    const idx = text.search(new RegExp(def.not_leader_marker));
+    if (idx > 0) { leaderPart = text.slice(0, idx); restPart = text.slice(idx); }
+    else leaderPart = text;
+  }
+  const ref = (ultraAbility.ref_tags || []).find((t) => t && t.tag != null && !t.enemy);
+  return {
+    tag: ref ? Number(ref.tag) : null,
+    tagName: ref ? String(ref.name || '') : '',
+    leaderPct: hasLeader ? num(def.leader_pct, leaderPart) : 0,
+    perPct: num(def.per_member_pct, restPart),
+    capPct: num(def.cap_pct, text),
+  };
+}
+
+/** キャラの ULTRAアビリティ一覧から「力の共鳴」を取り出す */
+export function resonanceOf(character, effectMap) {
+  for (const u of character?.ultra_ability || []) {
+    const r = parseResonance(u, effectMap);
+    if (r) return r;
+  }
+  return null;
+}
+
+/**
+ * 今のパーティでの「力の共鳴」の効き（§43）。
+ * @param character 対象（ULTRAキャラ）
+ * @param members   パーティ全員 [{character, my}]（バトル3 + ゼンカイ枠3）
+ * @param leaderId  リーダーのキャラID
+ * @returns {{isLeader, count, pct, tagName, tag, matched:Array}|null}
+ */
+export function resonanceEffect(character, members, leaderId, effectMap) {
+  const r = resonanceOf(character, effectMap);
+  if (!r) return null;
+  const isLeader = leaderId != null && String(leaderId) === String(character.id);
+  if (isLeader) {
+    return { isLeader: true, count: 0, pct: r.leaderPct, tagName: r.tagName, tag: r.tag, matched: [] };
+  }
+  const matched = (members || []).filter((m) => r.tag != null && (m.character.tags || []).includes(r.tag));
+  let pct = r.perPct * matched.length;
+  if (r.capPct > 0) pct = Math.min(pct, r.capPct);
+  return { isLeader: false, count: matched.length, pct, tagName: r.tagName, tag: r.tag, matched };
 }

@@ -9,7 +9,7 @@ import {
   statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
   pickZenkaiMembers, scoreZenkaiCandidates, bestForCharacter, fragsConflict,
   zenkaiAbilityLevel, ZENKAI_MIN_STARS, ZENKAI_DEFAULT_LEVEL,
-  zenkaiProvidersFor, sumGroupsFor, theoreticalMax,
+  zenkaiProvidersFor, sumGroupsFor, theoreticalMax, resonanceOf, resonanceEffect,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -284,7 +284,11 @@ function charFilterControls(f, onChange) {
 // 多ステータス目標からは除外（単一ステータス指定や総合ステ最大では従来どおり扱える）。
 const PRESETS = {
   strike_pure: { label: '完全打撃特化', weights: { strike_atk: 1 } },
-  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, blast_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
+  // §43: 「打撃特化（総合重視）」は “打撃を伸ばしつつ、防御と体力も上げる” という意味にする。
+  // 反対側の攻撃（射撃）は 0 にして計上しない。以前は 0.15 入れていたため、
+  // 射撃しか上げないフラグやアビリティが僅差で勝つことがあった。
+  // 代わりに防御 0.5→0.9 / 体力 0.07→0.09 に引き上げて「総合」の意味を強める
+  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, blast_atk: 0, hp: 0.09, strike_def: 0.9, blast_def: 0.9 } },
   balance: { label: '総合バランス', weights: { hp: 0.08, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.75, blast_def: 0.75 } },
   // 「付いている補正%の合計」を最大化する（+1%はどのステータスでも等価）。
   // percent: true のプリセットは、キャラごとに ❶ で正規化した重み（w×100000/❶）を実行時に生成する。
@@ -293,7 +297,7 @@ const PRESETS = {
     label: '総合強化重視（補正%の合計を最大化）', percent: true,
     weights: { hp: 1, strike_atk: 1, blast_atk: 1, strike_def: 1, blast_def: 1 },
   },
-  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0.15, hp: 0.07, strike_def: 0.5, blast_def: 0.5 } },
+  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0, hp: 0.09, strike_def: 0.9, blast_def: 0.9 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
   // 体力被回復量（heal_received）は擬似ステータス（§25: +1% = 重み×1,000点。
   // 重み1で防御+0.6〜0.8%相当）。回復役がいるパーティでは耐久に直結する
@@ -665,6 +669,35 @@ function fragTile(f, opts = {}) {
 // ---------------------------------------------------------------- 編成タブ
 
 /**
+ * パーティ全体の「力の共鳴」サマリ（§43）。
+ * ULTRAキャラが何人いて、それぞれ何%受け取れているかを編成画面に出す。
+ * タグを揃えるほど伸びるので、編成を組み替える判断材料になる。
+ */
+function resonanceSummary(members) {
+  if (ui.party.mode !== 'standard' || members.length === 0) return null;
+  const leaderId = ui.party.memberIds[0] || null;
+  const rows = [];
+  for (const m of members) {
+    const e = resonanceEffect(m.character, members, leaderId, state.game.effectMap);
+    if (!e) continue;
+    rows.push({ m, e });
+  }
+  if (rows.length === 0) return null;
+  const total = rows.reduce((t, r) => t + r.e.pct, 0);
+  return el('div', { class: 'card sub-card', style: 'margin-bottom:8px' },
+    el('h3', {}, '力の共鳴（ULTRAアビリティ）'),
+    rows.map(({ m, e }) => el('div', { class: 'effline' },
+      el('span', { class: e.pct > 0 ? 'ultra-cond-ok' : 'ultra-cond-ng' },
+        `${m.character.name}: +${e.pct}%`),
+      el('span', { class: 'small-note' },
+        e.isLeader ? '（リーダーのため固定値）' : `（タグ「${e.tagName}」${e.count}人）`))),
+    el('p', { class: 'small-note' },
+      `合計 +${total}%（与ダメージ・気力回復速度）。`
+      + 'メンバーの場合は指定タグの人数で増えるので、タグを揃えるほど伸びます。'
+      + '与ダメージぶんは火力に反映され、ステータス表示(❸)には含まれません。'));
+}
+
+/**
  * 編成プリセット（§41）。名前を付けて保存・呼び出し・上書き・削除する。
  * 自動保存の parties[0]（今いじっている編成）とは別物で、party_presets に持つ。
  */
@@ -943,6 +976,7 @@ function renderParty() {
           el('div', {}, 'バトル3体 ', statSelect, ' 合計'),
           el('div', { class: 'val' }, fmt0(totals[0]))),
     partyPresetBar(),
+    resonanceSummary(members),
     el('div', { class: 'party-grid' }, [0, 1, 2].map(slot)),
     el('div', { class: 'party-grid' }, [3, 4, 5].map(slot)),
     proud
@@ -1844,6 +1878,48 @@ function openFragPicker(cid, slotIdx) {
 // ---------------------------------------------------------------- キャラタブ / キャラ詳細シート
 
 /**
+ * ULTRAアビリティ「力の共鳴」が今の編成で何%になるか（§43）。
+ * リーダーなら固定値、そうでなければ「指定タグの人数 × N%」。
+ * 誰が数えられているかまで出さないと、編成を変える判断ができない。
+ */
+function resonanceView(def) {
+  const r = resonanceOf(def, state.game.effectMap);
+  if (!r) return null;
+  const members = partyMembers();
+  const leaderId = ui.party.memberIds[0] || null;
+  const inParty = members.some((m) => String(m.character.id) === String(def.id));
+  const e = resonanceEffect(def, members, leaderId, state.game.effectMap);
+  const rows = [];
+  if (!inParty) {
+    rows.push(el('p', { class: 'small-note' }, '※このキャラは今の編成に入っていないため、下は「入れた場合」の参考値です。'));
+  }
+  // リーダーに置いた場合との比較を常に出す（どちらが得かがこの機能の要点）
+  const asLeader = r.leaderPct;
+  const asMember = e && !e.isLeader ? e.pct : (r.perPct * members.filter((m) => (m.character.tags || []).includes(r.tag)).length);
+  return el('div', { style: 'margin:4px 0 10px' },
+    el('div', { class: 'item-title' }, `力の共鳴（タグ: ${r.tagName || '不明'}）`),
+    rows,
+    e ? el('div', { class: 'effline' },
+      el('span', { class: 'up' },
+        e.isLeader
+          ? `現在: リーダーのため 与ダメージ・気力回復速度 +${e.pct}%`
+          : `現在: 「${e.tagName}」が ${e.count} 人 → 与ダメージ・気力回復速度 +${e.pct}%`)) : null,
+    e && !e.isLeader && e.matched.length
+      ? el('div', { class: 'small-note', style: 'margin-left:8px' },
+          `該当: ${e.matched.map((m) => m.character.name).join(' / ')}`)
+      : null,
+    asLeader > 0
+      ? el('p', { class: 'small-note' },
+          `リーダー枠に置くと無条件で +${asLeader}%。`
+          + `メンバーとして置く場合は「${r.tagName}」1人につき +${r.perPct}%（今の編成なら +${asMember}%）。`
+          + (asLeader > asMember ? ' → 今の編成ならリーダーの方が得です。' : ' → 今の編成ならメンバーのままで十分です。'))
+      : el('p', { class: 'small-note' },
+          `「${r.tagName}」1人につき +${r.perPct}%${r.capPct ? `（上限 ${r.capPct}%）` : ''}。`),
+    el('p', { class: 'small-note' },
+      '与ダメージぶんは火力（❸×倍率）に反映されます。気力回復速度はステータスではないため計算には入れていません。'));
+}
+
+/**
  * 「このキャラに ZENKAIアビリティが乗る ZENKAI覚醒キャラ」の逆引き表（§40）。
  * ゼンカイ枠に誰を置けるかが一目で分かる。候補が極端に少ないキャラ
  * （属性条件で狙われにくい色）は、そもそも伸ばしにくいことも見える。
@@ -2188,9 +2264,11 @@ function openCharSheet(cid) {
       isUltra
         ? el('h3', {}, el('span', { class: 'ultra-badge' }, 'ULTRA'), ' ウルトラアビリティ')
         : el('h3', {}, 'ユニークアビリティ'),
+      resonanceView(def),
       el('p', { class: 'small-note' },
-        '与ダメージ・気力回復などの戦闘効果のためステータス計算(❸)には含まれません。' +
-        'リーダー枠に置く、または参照タグのキャラを編成すると強化される効果です。'),
+        'ステータス計算(❸)には含まれない戦闘効果です。'
+        + 'ただし「力の共鳴」の与ダメージぶんだけは火力（❸×倍率）として上に反映しています（§43）。'
+        + 'リーダー枠に置く、または参照タグのキャラを編成すると強化されます。'),
       ...list.filter((u) => (u.text || '').trim() || (u.name || '').trim()).map((u) => el('div', { style: 'margin-bottom:8px' },
         el('div', { class: 'item-title' }, u.name),
         el('div', { class: 'item-desc', style: 'white-space:pre-wrap' },
