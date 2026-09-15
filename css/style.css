@@ -454,3 +454,16 @@ hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 }
 .ultra-cond-ok { color: var(--ok); font-weight: 700; }
 .ultra-cond-ng { color: var(--warn); }
+
+/* キャラタイルのアビリティ数値行（§40）。名前帯のすぐ上に重ねる。
+   上端は レアリティタグ / LL・ZKタグ が使っているので下側に置く */
+.char-tile .ab-line {
+  position: absolute; left: 0; right: 0; bottom: 24%;
+  font-size: 8px; line-height: 1.3; padding: 0 3px;
+  text-align: left; color: #ffe9a8;
+  background: rgba(0, 0, 0, .78);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+/* 所持マークが重ならないように、アビリティ行を出す時だけ上へ逃がす */
+.char-tile.has-ab .owned-mark { bottom: calc(24% + 12px); }

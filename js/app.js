@@ -9,6 +9,7 @@ import {
   statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
   pickZenkaiMembers, scoreZenkaiCandidates, bestForCharacter, fragsConflict,
   zenkaiAbilityLevel, ZENKAI_MIN_STARS, ZENKAI_DEFAULT_LEVEL,
+  zenkaiProvidersFor, sumGroupsFor, theoreticalMax,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -53,7 +54,28 @@ const CHAR_SORTS = [
   ['id', '入手順'], ['card_no', 'カード番号'], ['rarity', 'レアリティ'], ['element', '属性'],
   ['stars', '限界突破'], ['hp', '体力'], ['strike_atk', '打撃攻撃'], ['blast_atk', '射撃攻撃'],
   ['strike_def', '打撃防御'], ['blast_def', '射撃防御'], ['critical', 'クリティカル'], ['ki_recovery', '気力回復'],
+  ['ab_z', 'Zアビの数値'], ['ab_zenkai', 'ZENKAIアビの数値'], ['ab_all', 'アビリティ合計'],
 ];
+
+/**
+ * キャラ一覧に出すアビリティ数値の要約（§40）。
+ * 707体ぶん毎回解決すると重いので、キャラID＋星＋ZENKAIレベルをキーにキャッシュする。
+ */
+const _abSummaryCache = new Map();
+function abilitySummary(def) {
+  const my = charMy(def.id) || defaultCharMy(def);
+  const key = `${def.id}:${my.stars}:${my.zenkai_lv ?? ''}:${my.z_level ?? ''}:${my.zenkai_level ?? ''}`;
+  const hit = _abSummaryCache.get(key);
+  if (hit) return hit;
+  const ab = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
+  // 条件を無視した「素の数値」。誰に乗るかは編成次第なので、一覧では最大値として出す
+  const z = sumGroupsFor(ab.z, null, true);
+  const zenkai = sumGroupsFor(ab.zenkai, null, true);
+  const deploy = sumGroupsFor(ab.deploy, null, true);
+  const out = { z, zenkai, deploy, total: z.total + zenkai.total + deploy.total };
+  _abSummaryCache.set(key, out);
+  return out;
+}
 const RARITY_ORDER = { ULTRA: 6, LEGEND: 5, SPARKING: 4, EXTREME: 3, HERO: 2 };
 const CHAR_RARITIES = ['HERO', 'EXTREME', 'SPARKING', 'LEGEND', 'ULTRA'];
 const STYLE_TAGS = [13000, 13001, 13002, 13003]; // 援護/防御/打撃/射撃タイプ
@@ -64,6 +86,7 @@ function defaultCharFilter() {
     els: [], rarities: [], ll: false, styles: [],
     owned: '', zenkai: false, tagName: '', zStat: '',
     siteTags: [], // サイト内タグ（§33）。複数選んだらAND
+    showAbility: false, // タイルにZ/ZENKAIアビの数値を出す（§40）
   };
 }
 
@@ -104,6 +127,9 @@ function applyCharSortFilter(defs, f) {
       case 'rarity': return RARITY_ORDER[d.rarity] || 0;
       case 'element': return ELEMENTS.indexOf(d.element);
       case 'stars': return charMy(d.id) ? (Number(charMy(d.id).stars) || 0) : (isOwned(d.id) ? 7 : -1);
+      case 'ab_z': return abilitySummary(d).z.total;
+      case 'ab_zenkai': return abilitySummary(d).zenkai.total;
+      case 'ab_all': return abilitySummary(d).total;
       case 'critical': return Number(d.soul_max?.critical) || 0;
       default: return Number(d.stats?.[f.sort]) || 0;
     }
@@ -242,6 +268,8 @@ function charFilterControls(f, onChange) {
             el('option', { value: '', selected: f.zStat === '' }, '指定なし'),
             STATS.map((s) => el('option', { value: s, selected: f.zStat === s }, STAT_LABELS[s]))))),
       siteTagFilterUI(f, onChange, chip, refreshers),
+      el('div', { class: 'chip-row' },
+        chip('アビリティ数値を表示', () => f.showAbility, () => { f.showAbility = !f.showAbility; })),
       el('button', {
         class: 'btn secondary small',
         onclick: () => { Object.assign(f, defaultCharFilter()); onChange(true); },
@@ -583,7 +611,7 @@ function switchTab(name) {
 function charTile(def, opts = {}) {
   const owned = isOwned(def.id);
   return el('div', {
-    class: `char-tile el-${def.element}`,
+    class: `char-tile el-${def.element}${opts.showAbility ? ' has-ab' : ''}`,
     onclick: opts.onclick,
   },
     lazyImg(def.image, def.name),
@@ -591,7 +619,25 @@ function charTile(def, opts = {}) {
     def.lf ? el('div', { class: 'll-tag' }, 'LL') : null,
     def.zenkai ? el('div', { class: 'll-tag', style: 'top:12px;background:linear-gradient(180deg,#9be08a,#3fa04f);color:#0c2a10' }, 'ZK') : null,
     owned && opts.showOwned !== false ? el('div', { class: 'owned-mark' }, '✓') : null,
-    el('div', { class: 'cname' }, def.name));
+    el('div', { class: 'cname' }, def.name),
+    opts.showAbility ? abilityTagLine(def) : null);
+}
+
+/** タイル下に出すアビリティ数値の1行（§40）。素の数値＝条件を無視した最大値 */
+function abilityTagLine(def) {
+  const a = abilitySummary(def);
+  const parts = [];
+  if (a.z.total > 0) parts.push(`Z+${Math.round(a.z.total)}`);
+  if (a.zenkai.total > 0) parts.push(`ZK+${Math.round(a.zenkai.total)}`);
+  if (a.deploy.total > 0) parts.push(`出撃+${Math.round(a.deploy.total)}`);
+  if (parts.length === 0) return null;
+  return el('div', { class: 'ab-line', title: abilityTagTitle(a) }, parts.join(' / '));
+}
+
+function abilityTagTitle(a) {
+  const fmtSums = (s) => Object.entries({ ...s.base, ...s.nonBase, ...s.damage })
+    .map(([k, v]) => `${STAT_LABELS[k] || k}+${v}%`).join(' / ') || 'なし';
+  return `Zアビ: ${fmtSums(a.z)}\nZENKAIアビ: ${fmtSums(a.zenkai)}\n出撃Zアビ: ${fmtSums(a.deploy)}`;
 }
 
 function fragTile(f, opts = {}) {
@@ -1653,6 +1699,44 @@ function openFragPicker(cid, slotIdx) {
 
 // ---------------------------------------------------------------- キャラタブ / キャラ詳細シート
 
+/**
+ * 「このキャラに ZENKAIアビリティが乗る ZENKAI覚醒キャラ」の逆引き表（§40）。
+ * ゼンカイ枠に誰を置けるかが一目で分かる。候補が極端に少ないキャラ
+ * （属性条件で狙われにくい色）は、そもそも伸ばしにくいことも見える。
+ */
+function zenkaiProvidersView(def, cid) {
+  const all = Object.values(state.game.characters);
+  const list = zenkaiProvidersFor(def, all, state.game.effectMap, {
+    myOf: (id) => charMy(id) || defaultCharMy(charDef(id)),
+    leaderId: ui.party.memberIds[0] || null,
+  });
+  const fmtSums = (sums) => Object.entries({ ...sums.base, ...sums.nonBase, ...sums.damage })
+    .map(([k, v]) => `${STAT_LABELS[k] || k}+${v}%`).join(' / ');
+  const owned = list.filter((x) => isOwned(x.id));
+  const row = (x) => el('div', { class: 'effline' },
+    el('span', { class: isOwned(x.id) ? 'ultra-cond-ok' : 'small-note' },
+      `${isOwned(x.id) ? '' : '【未所持】'}${x.character.name}`),
+    el('span', { class: 'small-note' }, ` ${x.character.card_no}`),
+    el('div', { class: 'small-note', style: 'margin-left:8px' },
+      `ZENKAI: ${fmtSums(x.zenkai)}`),
+    x.zTotal > 0 ? el('div', { class: 'small-note', style: 'margin-left:8px' },
+      `Zアビ: ${fmtSums(x.z)}`) : null);
+  return el('div', {},
+    el('h3', {}, 'ゼンカイ枠に置ける ZENKAI覚醒キャラ'),
+    list.length === 0
+      ? el('p', { class: 'small-note' },
+          'このキャラに ZENKAIアビリティが乗る ZENKAI覚醒キャラは、全キャラ中1体もいません。'
+          + 'ZENKAIアビは属性＋タグ条件が多いため、色とタグの組み合わせによっては候補が存在しません。')
+      : el('div', {},
+          el('p', { class: 'small-note' },
+            `${list.length} 体が該当（所持 ${owned.length} 体）。`
+            + 'ゼンカイ枠に置くと ZENKAIアビが乗ります。Zアビは枠に関係なくパーティ全員に乗るので、'
+            + '実際の優劣はZアビの数値で決まることが多いです（§36-7）。'),
+          el('details', {},
+            el('summary', {}, `候補を表示（${list.length} 体）`),
+            list.map(row))));
+}
+
 /** キャラ詳細に出すサイト内タグ（§33）。系統ごとにまとめて表示する */
 function siteTagsView(def) {
   const defs = state.game.siteTags;
@@ -1688,7 +1772,7 @@ function renderChars() {
       ? `全 ${total} 体 / 所持登録 ${Object.keys(state.my.characters).length} 体。タップで詳細・所持登録。`
       : `表示中 ${defs.length} 体（全 ${total} 体中）/ 所持登録 ${Object.keys(state.my.characters).length} 体。`;
     grid.replaceChildren(...defs.map((d) =>
-      charTile(d, { onclick: () => openCharSheet(String(d.id)) })));
+      charTile(d, { onclick: () => openCharSheet(String(d.id)), showAbility: f.showAbility })));
     if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当するキャラがいません。フィルタをリセットしてください。'));
   };
   root.replaceChildren(
@@ -2000,6 +2084,7 @@ function openCharSheet(cid) {
     statTable,
     ultraView(),
     siteTagsView(def),
+    zenkaiProvidersView(def, cid),
     el('h3', {}, 'アビリティ補正（現在の設定で有効な値）'),
     abilityPreview(),
     partyBenefitPreview(),
@@ -2206,6 +2291,69 @@ const VERIFY_CASES = [
   { label: '検算(3)', fragBase: 15, fragNonBase: 40 },
 ];
 
+/**
+ * お遊びモード（§40）: 「ゲーム内で最も○○の数値が高くなる組み合わせ」。
+ * 全キャラ所持・★14・ZENKAIレベル7・フラグメント無制限という理論値の前提で、
+ * キャラ／パーティ5体／フラグメントの組み合わせを概算する。
+ * 厳密解は組合せ爆発で不可能なので2段階の近似（theoreticalMax 参照）。
+ */
+function theoreticalCard() {
+  const box = el('div', {});
+  const stat = ui.theo?.stat || 'strike_atk';
+  if (!ui.theo) ui.theo = { stat };
+  const render = () => {
+    const r = ui.theo.result;
+    box.replaceChildren(...nodes(
+      r ? el('div', {},
+        el('p', { class: 'small-note' }, r.method),
+        r.ranking.slice(0, 10).map((x, i) => el('div', { class: 'item', style: 'margin-bottom:6px' },
+          el('div', { class: 'item-title' },
+            `${i + 1}位  ${STAT_LABELS[ui.theo.stat]} ${fmt0(x.final)}`),
+          el('div', { class: 'item-desc' },
+            `${x.character.name}（${x.character.card_no}）／ ❶${fmt0(x.base)} ＋ アビリティ補正 +${Math.round(x.corr)}%`),
+          el('div', { class: 'small-note' },
+            `パーティ: ${x.party.map((id) => charDef(id)?.name || id).join(' / ')}`),
+          el('div', { class: 'small-note' },
+            `フラグ: ${x.fragIds.map((id) => fragDef(id)?.name || id).join(' / ')}`)))) : null));
+  };
+  const run = () => {
+    const btn = box.parentElement?.querySelector('#theo-run');
+    if (btn) { btn.disabled = true; btn.textContent = '計算中…'; }
+    setTimeout(() => {
+      try {
+        ui.theo.result = theoreticalMax({
+          stat: ui.theo.stat,
+          characters: Object.values(state.game.characters),
+          fragmentsById: state.game.fragments,
+          effectMap: state.game.effectMap,
+          // 理論値なので全キャラ★14・ZENKAIレベル7・SLOT4解放として扱う
+          myOf: () => ({ stars: 14, equip_slots: 4, zenkai_lv: 7 }),
+          topN: 12,
+        });
+        render();
+      } catch (e) {
+        showMsg('warn', `■ 理論値の計算に失敗しました: ${e.message}`);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '理論値を計算'; }
+      }
+    }, 0);
+  };
+  render();
+  return el('div', { class: 'card' },
+    el('h3', {}, '🎲 理論値モード（お遊び）'),
+    el('p', { class: 'small-note' },
+      '「ゲーム内で最も○○の数値が高くなる組み合わせ」を探します。'
+      + '全キャラ所持・★14・ZENKAIレベル7・フラグメント所持数無制限という前提の理論値で、'
+      + '実際の所持状況は見ていません。'),
+    el('div', { class: 'row' },
+      el('label', {}, '最大化するステータス',
+        el('select', {
+          onchange: (e) => { ui.theo.stat = e.target.value; ui.theo.result = null; render(); },
+        }, STATS.map((st) => el('option', { value: st, selected: ui.theo.stat === st }, STAT_LABELS[st])))),
+      el('button', { id: 'theo-run', class: 'btn', onclick: run }, '理論値を計算')),
+    box);
+}
+
 function renderCalc() {
   const m = ui.calc;
   const root = $('#calc-form');
@@ -2261,7 +2409,7 @@ function renderCalc() {
       def ? el('p', { class: 'small-note' }, '※効果条件付きの効果は、この画面ではパーティ文脈が無いため適用されません（編成タブでは考慮されます）。') : null);
   }
 
-  root.replaceChildren(el('div', { class: 'card' },
+  root.replaceChildren(theoreticalCard(), el('div', { class: 'card' },
     charSelect, statSelect,
     el('div', { class: 'grid2' },
       labeledNum('合計ステ（画面左の数値）', m, 'total'),

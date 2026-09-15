@@ -871,3 +871,66 @@ test('§38 ZENKAIレベル → ZENKAIアビリティレベルの対応表', asyn
   assert.equal(autoAbilityLevel(13), 3, 'Zアビは★13→III のまま');
   assert.notEqual(zenkaiAbilityLevel(7), autoAbilityLevel(7), 'ZENKAIは星の表を使わない');
 });
+
+// §40: 逆引き（このキャラに乗るZENKAI覚醒キャラ）と理論値モード
+test('§40 sumGroupsFor: 条件に合う分だけ合算する（リーダーはタグ無視）', async () => {
+  const { sumGroupsFor } = await import('../js/optimizer.js');
+  const groups = [
+    { cond: [[{ tag: 7 }]], effects: [{ stat: 'strike_atk', base: true, value: 30 }] },
+    { cond: [[{ tag: 99 }]], effects: [{ stat: 'blast_atk', base: true, value: 20 }] },
+    { cond: [], effects: [{ stat: 'strike_atk', base: false, value: 5, damage: true }] },
+  ];
+  const target = charaV2(1, [7]);
+  const hit = sumGroupsFor(groups, target, false);
+  assert.equal(hit.base.strike_atk, 30, 'タグ7は一致');
+  assert.equal(hit.base.blast_atk, undefined, 'タグ99は不一致');
+  assert.equal(hit.damage.strike_atk, 5, '与ダメージは damage バケツへ');
+  assert.equal(hit.total, 35, 'total は素の%の単純合計');
+  const all = sumGroupsFor(groups, target, true);
+  assert.equal(all.base.blast_atk, 20, 'ignoreCond なら条件を無視して全部乗る');
+  assert.equal(all.total, 55);
+});
+
+test('§40 zenkaiProvidersFor: ZENKAI覚醒キャラのうち条件が合うものだけ返す', async () => {
+  const { zenkaiProvidersFor } = await import('../js/optimizer.js');
+  const zen = (tag, value) => [1, 2, 3, 4].map((n) => ({
+    id: n, name: `ZENKAIアビリティ${n}`,
+    groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }],
+  }));
+  const target = charaV2(1, [7]);
+  const characters = [
+    target,
+    charaV2(10, [99], {}, { zenkai_ability: zen(7, 40) }),   // 条件一致
+    charaV2(11, [99], {}, { zenkai_ability: zen(8, 40) }),   // 条件不一致
+    charaV2(12, [99]),                                        // ZENKAI覚醒なし
+    charaV2(13, [99], {}, { zenkai_ability: zen(7, 10) }),   // 一致だが小さい
+  ];
+  const r = zenkaiProvidersFor(target, characters, effectMap, { myOf: () => myOf() });
+  assert.deepEqual(r.map((x) => String(x.id)), ['10', '13'], '一致するZENKAI覚醒キャラだけ・降順');
+  assert.equal(r[0].zenkai.base.strike_atk, 40);
+  assert.ok(!r.some((x) => String(x.id) === String(target.id)), '自分自身は含めない');
+});
+
+test('§40 theoreticalMax: 与ダメージを除外してステータス値を最大化する', async () => {
+  const { theoreticalMax } = await import('../js/optimizer.js');
+  const characters = [
+    charaV2(1, [7], { strike_atk: 100_000 }),
+    charaV2(2, [7], { strike_atk: 90_000 }),
+    charaV2(3, [7], { strike_atk: 80_000 }),
+  ];
+  const fragmentsById = {
+    // 与ダメージだけの巨大フラグ vs 基礎ありの小さいフラグ
+    900: { id: 900, name: '与ダメ特大', slots: [{ label: 'SLOT 1', star7: false, lines: [{ text: '打撃アーツ与ダメージ', value: 300 }] }] },
+    901: { id: 901, name: '基礎小', slots: [{ label: 'SLOT 1', star7: false, lines: [{ text: '基礎打撃攻撃力', value: 10 }] }] },
+  };
+  const r = theoreticalMax({
+    stat: 'strike_atk', characters, fragmentsById, effectMap,
+    myOf: () => myOf(3), topN: 3,
+  });
+  assert.ok(r.ranking.length > 0);
+  assert.ok(/与ダメージ/.test(r.method), '除外したことを method に明記する');
+  const top = r.ranking[0];
+  assert.ok(!top.fragIds.map(String).includes('900'),
+    '与ダメージはステータス画面に出ないので、ステータス最大化では選ばれない');
+  assert.ok(top.fragIds.map(String).includes('901'));
+});

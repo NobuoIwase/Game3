@@ -989,3 +989,154 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
   }
   return { stats, unknown, conditionalOff, damagePct };
 }
+
+// ---------------------------------------------------------------- §40 逆引き・理論値
+
+/**
+ * 効果グループ列を「対象キャラに乗る分だけ」ステータス別に合算する（§40）。
+ * @param groups memberAbilityGroups の z / zenkai / deploy のいずれか
+ * @param target 受け取る側のキャラ定義
+ * @param ignoreCond true なら条件を無視して全部乗せる（リーダー特例 §12-3 用）
+ * @returns {{base:Object, nonBase:Object, damage:Object, total:number}} total は素の%の単純合計
+ */
+export function sumGroupsFor(groups, target, ignoreCond = false) {
+  const base = {}, nonBase = {}, damage = {};
+  let total = 0;
+  for (const g of groups || []) {
+    if (!g.effects?.length) continue;
+    if (!ignoreCond && !conditionMatches(g.cond, target)) continue;
+    for (const e of g.effects) {
+      const bucket = e.damage ? damage : (e.base === false ? nonBase : base);
+      bucket[e.stat] = (bucket[e.stat] || 0) + e.value;
+      total += e.value;
+    }
+  }
+  return { base, nonBase, damage, total };
+}
+
+/**
+ * 「このキャラに ZENKAIアビリティが乗る ZENKAI覚醒キャラ」の一覧（§40）。
+ * ゼンカイ枠に誰を置けるかを逆引きするための表。Zアビ分も併記する
+ * （§36-7: 実際の優劣を決めているのは ZENKAIアビより Zアビであることが多い）。
+ *
+ * @param target 対象キャラ定義
+ * @param characters 全キャラ定義の配列
+ * @param opts.myOf   キャラID → my（星・ZENKAIレベル）を返す関数
+ * @param opts.leaderId 対象がリーダーなら、Zアビはタグ無視で乗る（§12-3）
+ * @returns 降順の配列 [{ id, character, zenkai, z, zenkaiTotal, zTotal }]
+ */
+export function zenkaiProvidersFor(target, characters, effectMap, opts = {}) {
+  const myOf = opts.myOf || (() => ({ stars: 7 }));
+  const isLeader = opts.leaderId != null && String(opts.leaderId) === String(target.id);
+  const out = [];
+  for (const c of characters) {
+    if (!c || c.id == null) continue;
+    if (String(c.id) === String(target.id)) continue;
+    if (!(c.zenkai_ability || []).length) continue; // ZENKAI覚醒キャラだけ
+    const ab = memberAbilityGroups({ character: c, my: myOf(c.id), effectMap });
+    const zenkai = sumGroupsFor(ab.zenkai, target, false);
+    if (zenkai.total <= 0) continue; // 条件に合わず1つも乗らないなら出さない
+    const z = sumGroupsFor(ab.z, target, isLeader);
+    out.push({ id: c.id, character: c, zenkai, z, zenkaiTotal: zenkai.total, zTotal: z.total });
+  }
+  out.sort((a, b) => (b.zenkaiTotal + b.zTotal) - (a.zenkaiTotal + a.zTotal));
+  return out;
+}
+
+/**
+ * 「ゲーム内で最も○○が高くなる組み合わせ」を概算する（§40・お遊びモード）。
+ *
+ * 厳密解は組合せ爆発（キャラ707体から6体 × フラグメント配分）で不可能なので、
+ * 次の2段構えで求める。**近似であることを画面に明記すること。**
+ *
+ *   1段目: 各キャラを「リーダー兼対象」に固定し、残り5枠を埋めたときの ❷ を求める。
+ *          リーダーは全キャラのZアビをタグ無視で受ける（§12-3）ので、Zアビ分は
+ *          対象に依らず一定 → 先に計算して使い回せる。ZENKAI・出撃Zだけ条件判定する。
+ *          枠の割り当ては「出撃Zアビは出撃3体からしか出ない」を考慮した近似
+ *          （出撃Z込みで強い2体をバトル枠、残りをゼンカイ枠）。
+ *   2段目: 1段目の上位 topN 体だけ、フラグメントを厳密に最適化して ❸ を出す。
+ *
+ * @returns {{ranking:Array, method:string}}
+ */
+export function theoreticalMax({
+  stat, characters, fragmentsById, effectMap: rawMap, myOf, topN = 12, onProgress,
+}) {
+  const my = myOf || (() => ({ stars: 14, equip_slots: 4 }));
+  const list = characters.filter((c) => c && c.id != null);
+  // 「ゲーム内で最も○○の数値が高くなる」= ステータス画面の値（❸）の最大化。
+  // 与ダメージ（§37）は最終火力への乗算でステータス画面には出ないので、
+  // ここでは計算対象から外す（外さないと与ダメージ+170%の専用ユニフラを持つキャラが
+  // ステータスではなく火力で1位になり、「○○の数値」として誤答になる）
+  const effectMap = {
+    ...rawMap,
+    entries: Object.fromEntries(Object.entries(rawMap.entries || {})
+      .map(([k, v]) => [k, v && v.damage ? { other: true } : v])),
+  };
+
+  // 各キャラのアビリティを1回だけ解決する（一番重い処理）
+  const resolved = list.map((c) => ({ c, ab: memberAbilityGroups({ character: c, my: my(c.id), effectMap }) }));
+  // Zアビはリーダーにタグ無視で乗る → 対象に依らず一定
+  const zFree = resolved.map((r) => ({ r, s: sumGroupsFor(r.ab.z, null, true) }));
+  onProgress?.(0.25);
+
+  const val = (sums) => (sums.base[stat] || 0) + (sums.nonBase[stat] || 0) + (sums.damage[stat] || 0);
+  const stage1 = [];
+  for (const { c } of resolved) {
+    const sb = statBase(c, my(c.id), stat);
+    if (!sb || sb.base <= 0) continue;
+    // 候補ごとの貢献（対象 = c 自身がリーダー）
+    const cands = [];
+    for (let i = 0; i < zFree.length; i++) {
+      const { r, s } = zFree[i];
+      if (String(r.c.id) === String(c.id)) continue;
+      const z = val(s);
+      const zk = r.ab.zenkai.length ? val(sumGroupsFor(r.ab.zenkai, c, false)) : 0;
+      const dp = r.ab.deploy.length ? val(sumGroupsFor(r.ab.deploy, c, false)) : 0;
+      if (z + zk + dp <= 0) continue;
+      cands.push({ id: r.c.id, a: z + zk, d: dp });
+    }
+    // バトル枠2 = 出撃Z込みで強い2体 / ゼンカイ枠3 = 残りから強い3体（近似）
+    cands.sort((x, y) => (y.a + y.d) - (x.a + x.d));
+    const battle = cands.slice(0, 2);
+    const used = new Set(battle.map((x) => String(x.id)));
+    const bench = cands.filter((x) => !used.has(String(x.id))).sort((x, y) => y.a - x.a).slice(0, 3);
+    // 自分自身のアビリティも自分に乗る
+    const selfAb = resolved.find((r) => String(r.c.id) === String(c.id)).ab;
+    const selfZ = val(sumGroupsFor(selfAb.z, c, true));
+    const selfZk = val(sumGroupsFor(selfAb.zenkai, c, false));
+    const selfDp = val(sumGroupsFor(selfAb.deploy, c, false));
+    const corr = selfZ + selfZk + selfDp
+      + battle.reduce((a, x) => a + x.a + x.d, 0)
+      + bench.reduce((a, x) => a + x.a, 0);
+    stage1.push({
+      id: c.id, character: c, corr,
+      base: sb.base, boost: sb.boost,
+      noFrag: finalStat({ base: sb.base, boost: sb.boost, corr, nonBase: 0 }),
+      party: [...battle.map((x) => x.id), ...bench.map((x) => x.id)],
+    });
+  }
+  stage1.sort((a, b) => b.noFrag - a.noFrag);
+  onProgress?.(0.6);
+
+  // 2段目: 上位だけフラグメントを厳密最適化
+  const ranking = [];
+  const head = stage1.slice(0, topN);
+  for (let i = 0; i < head.length; i++) {
+    const e = head[i];
+    const member = { character: e.character, my: my(e.id) };
+    const counts = {};
+    for (const f of Object.values(fragmentsById)) if (f && f.id != null) counts[String(f.id)] = 6;
+    const ext = { z: { [stat]: e.corr }, zenkai: {}, ll: {}, extNonBase: {}, damage: {} };
+    const best = bestForCharacter({
+      member, ext, fragmentsById, counts, weights: { [stat]: 1 }, effectMap, context: null,
+    });
+    ranking.push({ ...e, fragIds: best.ids, final: best.score });
+    onProgress?.(0.6 + (0.4 * (i + 1)) / head.length);
+  }
+  ranking.sort((a, b) => b.final - a.final);
+  return {
+    ranking,
+    method: `全${list.length}体をリーダーに置いた場合の❷を算出し、上位${topN}体だけフラグメントを厳密最適化した概算`
+      + '（与ダメージはステータス画面に出ないため計算から除外）',
+  };
+}
