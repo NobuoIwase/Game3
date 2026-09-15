@@ -830,3 +830,44 @@ test('§37 与ダメージは最適化スコアに効く（基礎なしと同じ
   });
   assert.ok(r.ids.map(String).includes('901'), '与ダメージ+100%は基礎+5%より高く評価される');
 });
+
+// §38: ZENKAIアビリティは星（限界突破）ではなく ZENKAIレベルで決まる。
+// ZENKAI覚醒は本体★7以上が前提で、そこから先は ZENKAIソウルで ZENKAIレベルが上がる。
+test('§38 ZENKAIアビリティは星と連動しない（★13でもLv7ならIV）', async () => {
+  const { memberAbilityGroups, zenkaiAbilityLevel } = await import('../js/optimizer.js');
+  const zk = [1, 2, 3, 4].map((n) => ({
+    id: n, name: `ZENKAIアビリティ${n}`,
+    groups: [{ cond: [], effects: [{ text: '基礎打撃攻撃力', value: n * 10 }], unresolved: [], raw: '' }],
+  }));
+  const character = charaV2(1, [7], {}, { zenkai_ability: zk });
+  const val = (my) => {
+    const r = memberAbilityGroups({ character, my, effectMap });
+    return r.zenkai[0]?.effects[0]?.value ?? 0;
+  };
+  // 報告された症状: ★13 で ZENKAIアビが III になっていた（星の表 ★6-13→III を使っていたため）
+  assert.equal(val({ ...myOf(), stars: 13, zenkai_lv: 7 }), 40, '★13 + Lv7 → IV');
+  assert.equal(val({ ...myOf(), stars: 7, zenkai_lv: 7 }), 40, '★7 のままでも Lv7 なら IV');
+  assert.equal(val({ ...myOf(), stars: 14, zenkai_lv: 1 }), 10, '★14 でも Lv1 なら I');
+  // 未入力は最大（Lv7 = IV）扱い
+  assert.equal(val({ ...myOf(), stars: 7 }), 40, 'ZENKAIレベル未入力は Lv7（最大）');
+  // ★7未満は ZENKAI覚醒の前提を満たさないので発動しない
+  assert.equal(val({ ...myOf(), stars: 6, zenkai_lv: 7 }), 0, '★6 では ZENKAIアビリティ無効');
+  // 手入力の上書きは引き続き効く
+  assert.equal(val({ ...myOf(), stars: 7, zenkai_lv: 7, zenkai_level: 2 }), 20, '手入力の上書きが優先');
+  assert.equal(val({ ...myOf(), stars: 7, zenkai_lv: 7, zenkai_level: 0 }), 0, 'zenkai_level=0 は無効化');
+});
+
+test('§38 ZENKAIレベル → ZENKAIアビリティレベルの対応表', async () => {
+  const { zenkaiAbilityLevel, ZENKAI_ABILITY_BY_LEVEL } = await import('../js/optimizer.js');
+  assert.deepEqual(ZENKAI_ABILITY_BY_LEVEL, [1, 1, 2, 2, 3, 3, 4], 'Lv1-2→I / 3-4→II / 5-6→III / 7→IV');
+  assert.equal(zenkaiAbilityLevel(1), 1);
+  assert.equal(zenkaiAbilityLevel(4), 2);
+  assert.equal(zenkaiAbilityLevel(6), 3);
+  assert.equal(zenkaiAbilityLevel(7), 4);
+  assert.equal(zenkaiAbilityLevel(undefined), 4, '未入力は最大');
+  assert.equal(zenkaiAbilityLevel(99), 4, '範囲外は丸める');
+  // Zアビ（星依存）とは別物であることを固定する
+  const { autoAbilityLevel } = await import('../js/optimizer.js');
+  assert.equal(autoAbilityLevel(13), 3, 'Zアビは★13→III のまま');
+  assert.notEqual(zenkaiAbilityLevel(7), autoAbilityLevel(7), 'ZENKAIは星の表を使わない');
+});

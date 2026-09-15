@@ -8,6 +8,7 @@ import {
   optimizeParty, partyAbilityCorrections, canEquip, characterDetail,
   statBase, autoAbilityLevel, memberAbilityGroups, isTournamentOnly, zRelationCounts,
   pickZenkaiMembers, scoreZenkaiCandidates, bestForCharacter, fragsConflict,
+  zenkaiAbilityLevel, ZENKAI_MIN_STARS, ZENKAI_DEFAULT_LEVEL,
 } from './optimizer.js';
 import * as store from './store.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
@@ -395,6 +396,7 @@ function defaultCharMy(def) {
     boost: { ...zeroStats(), ...(def?.soul_max || {}) },
     total_override: {},
     z_level: 'auto', deploy_z_level: 'auto', zenkai_level: 'auto',
+    zenkai_lv: ZENKAI_DEFAULT_LEVEL, // ZENKAIレベル（ZENKAIソウル依存。星とは別 — §38）
     z_ability: [], ll_ability: [], zenkai_ability: [],
   };
 }
@@ -1694,14 +1696,40 @@ function starsSelectCompact(cid, my) {
 
 const LEVEL_LABELS = ['I', 'II', 'III', 'IV'];
 
-function abilityLevelSelect(labelText, my, key, listLength, stars) {
+function abilityLevelSelect(labelText, my, key, listLength, stars, autoLabel) {
   if (!listLength) return null;
   const cur = my[key] ?? 'auto';
   return el('label', {}, labelText,
     el('select', { onchange: (e) => { my[key] = e.target.value === 'auto' ? 'auto' : Number(e.target.value); } },
-      el('option', { value: 'auto', selected: cur === 'auto' }, `自動（★${stars} → ${LEVEL_LABELS[autoAbilityLevel(stars) - 1]}）`),
+      el('option', { value: 'auto', selected: cur === 'auto' },
+        autoLabel || `自動（★${stars} → ${LEVEL_LABELS[autoAbilityLevel(stars) - 1]}）`),
       LEVEL_LABELS.slice(0, listLength).map((lab, i) =>
         el('option', { value: i + 1, selected: cur === i + 1 }, lab))));
+}
+
+/**
+ * ZENKAIアビリティの設定（§38）。星ではなく ZENKAIレベル（ZENKAIソウルで上がる）で決まる。
+ * 本体★7以上がZENKAI覚醒の前提なので、★6以下では効かない旨を出す。
+ */
+function zenkaiLevelRow(def, m2, cid) {
+  if (!def.zenkai_ability?.length) return null;
+  if ((Number(m2.stars) || 0) < ZENKAI_MIN_STARS) {
+    return el('p', { class: 'small-note' },
+      `ZENKAIアビリティ: 限界突破が★${ZENKAI_MIN_STARS}未満のため無効です（ZENKAI覚醒は★${ZENKAI_MIN_STARS}以上が前提）。`);
+  }
+  const lv = Number(m2.zenkai_lv) > 0 ? Number(m2.zenkai_lv) : ZENKAI_DEFAULT_LEVEL;
+  return el('div', {},
+    el('div', { class: 'row' },
+      el('label', {}, 'ZENKAIレベル',
+        el('select', {
+          onchange: (e) => { m2.zenkai_lv = Number(e.target.value); openCharSheet(cid); },
+        }, Array.from({ length: 7 }, (_, i) => el('option',
+          { value: i + 1, selected: lv === i + 1 }, `Lv${i + 1}`)))),
+      abilityLevelSelect('ZENKAIアビリティ', m2, 'zenkai_level', def.zenkai_ability.length, m2.stars,
+        `自動（Lv${lv} → ${LEVEL_LABELS[zenkaiAbilityLevel(lv) - 1]}）`)),
+    el('p', { class: 'small-note' },
+      'ZENKAIアビリティは限界突破（星）ではなく、ZENKAIソウルで上がる ZENKAIレベルで決まります。'
+      + `★${ZENKAI_MIN_STARS}のままでも Lv7＝IV になります。未設定は Lv${ZENKAI_DEFAULT_LEVEL}（最大）として計算します。`));
 }
 
 function openCharSheet(cid) {
@@ -1846,7 +1874,7 @@ function openCharSheet(cid) {
         labeledNum('装備枠', m2, 'equip_slots')),
       abilityLevelSelect('Zアビリティ', m2, 'z_level', def.z_ability?.length, m2.stars),
       abilityLevelSelect('出撃Zアビリティ', m2, 'deploy_z_level', def.deploy_z_ability?.length, m2.stars),
-      abilityLevelSelect('ZENKAIアビリティ', m2, 'zenkai_level', def.zenkai_ability?.length, m2.stars),
+      zenkaiLevelRow(def, m2, cid),
       el('h3', {}, 'ソウルブースト値（実機に合わせて調整）'),
       el('div', { class: 'grid2' }, STATS.map((s) => labeledNum(STAT_LABELS[s], m2.boost, s))),
       el('div', { class: 'row' },

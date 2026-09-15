@@ -75,6 +75,39 @@ function pickAbilityLevel(list, override, stars) {
   return list[idx];
 }
 
+/**
+ * ZENKAI覚醒の前提: 本体の限界突破が★7以上（§38）。
+ * ★6以下のキャラは ZENKAIアビリティ自体が無い。
+ */
+export const ZENKAI_MIN_STARS = 7;
+
+/**
+ * ZENKAIレベル(1〜7) → ZENKAIアビリティレベル(1〜4) の対応表（§38・ユーザー提供）。
+ * **星（限界突破）とは連動しない。** ZENKAI覚醒は本体★7以上が前提で、そこから先は
+ * ZENKAIソウルの取得で ZENKAIレベルが上がる。したがって「★7のまま ZENKAIレベル7 =
+ * ZENKAIアビリティIV」がありうる。Zアビ・出撃Zアビの autoAbilityLevel（星依存）とは別物。
+ * 対応表を直すときはこの配列だけ変えればよい。
+ */
+export const ZENKAI_ABILITY_BY_LEVEL = [1, 1, 2, 2, 3, 3, 4]; // 添字 = ZENKAIレベル-1
+
+/** 未入力は最大（Lv7 = アビリティIV）として扱う — ユーザー指定の既定 */
+export const ZENKAI_DEFAULT_LEVEL = 7;
+
+export function zenkaiAbilityLevel(zenkaiLv) {
+  const n = Number(zenkaiLv);
+  const lv = Number.isFinite(n) && n > 0 ? Math.round(n) : ZENKAI_DEFAULT_LEVEL;
+  const i = Math.min(Math.max(lv, 1), ZENKAI_ABILITY_BY_LEVEL.length);
+  return ZENKAI_ABILITY_BY_LEVEL[i - 1];
+}
+
+/** ZENKAIアビリティの採用レベル。手入力の上書きがあればそれ、無ければ ZENKAIレベルから */
+function pickZenkaiAbility(list, override, zenkaiLv) {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const level = (override && override !== 'auto') ? Number(override) : zenkaiAbilityLevel(zenkaiLv);
+  const idx = Math.min(Math.max(level, 1), list.length) - 1;
+  return list[idx];
+}
+
 /** 手入力アビリティ（旧形式 {stat, base, value, condition_tags}）をグループ形式へ変換 */
 function manualToGroups(list) {
   return (list || []).map((a) => ({
@@ -104,8 +137,13 @@ export function memberAbilityGroups({ character, my, effectMap }) {
   };
 
   const z = resolve(pickAbilityLevel(character.z_ability, my?.z_level, stars), 'Zアビリティ');
-  const zenkai = (character.zenkai_ability?.length && my?.zenkai_level !== 0)
-    ? resolve(pickAbilityLevel(character.zenkai_ability, my?.zenkai_level, stars), 'ZENKAIアビリティ')
+  // ZENKAIアビリティは星ではなく ZENKAIレベルで決まる（§38）。
+  // 本体★7以上がZENKAI覚醒の前提なので、★6以下では発動しない
+  const zenkaiOn = character.zenkai_ability?.length
+    && my?.zenkai_level !== 0
+    && stars >= ZENKAI_MIN_STARS;
+  const zenkai = zenkaiOn
+    ? resolve(pickZenkaiAbility(character.zenkai_ability, my?.zenkai_level, my?.zenkai_lv), 'ZENKAIアビリティ')
     : [];
   const deploy = resolve(pickAbilityLevel(character.deploy_z_ability, my?.deploy_z_level, stars), '出撃Zアビリティ');
 
