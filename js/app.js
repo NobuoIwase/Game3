@@ -121,7 +121,7 @@ function applyCharSortFilter(defs, f) {
  * サイト内タグ（§33）の絞り込みUI。系統ごとにたたんで並べる。
  * 実際に1体以上に付いているタグだけを出す（空振りする選択肢を並べない）。
  */
-function siteTagFilterUI(f, onChange, chip) {
+function siteTagFilterUI(f, onChange, chip, refreshers = []) {
   const defs = state.game.siteTags;
   if (!defs || !(defs.tags || []).length) return null;
   const count = new Map();
@@ -135,6 +135,8 @@ function siteTagFilterUI(f, onChange, chip) {
     byCat.get(t.category).push(t);
   }
   if (byCat.size === 0) return null;
+  // 該当数の少ない順に並べる。ほぼ全キャラが持つタグ（体力回復など）は絞り込みに効かないので後ろへ
+  for (const arr of byCat.values()) arr.sort((a, b) => count.get(a.id) - count.get(b.id));
   const rows = (defs.categories || []).filter((c) => byCat.has(c.id)).map((c) =>
     el('div', {},
       el('div', { class: 'item-title', style: 'margin-top:6px' }, c.label),
@@ -146,17 +148,30 @@ function siteTagFilterUI(f, onChange, chip) {
             const i = f.siteTags.indexOf(t.id);
             if (i >= 0) f.siteTags.splice(i, 1); else f.siteTags.push(t.id);
           })))));
-  return el('details', { open: f.siteTags.length > 0 },
-    el('summary', {}, `能力で絞り込む（サイト内タグ）${f.siteTags.length ? ` — ${f.siteTags.length}件選択中` : ''}`),
+  const sum = el('summary', {});
+  const label = () => {
+    sum.textContent = `能力で絞り込む（サイト内タグ）${f.siteTags.length ? ` — ${f.siteTags.length}件選択中` : ''}`;
+  };
+  label();
+  refreshers.push(label);
+  return el('details', { open: f.siteTags.length > 0 }, sum,
     el('p', { class: 'small-note' }, 'アビリティ本文から「いつ・何をするか」で自動分類したタグです。複数選ぶと全て満たすキャラだけが残ります。'),
     rows);
 }
 
 function charFilterControls(f, onChange) {
-  const chip = (label, isOn, toggle) => el('button', {
-    class: `chip${isOn() ? ' on' : ''}`,
-    onclick: () => { toggle(); onChange(); },
-  }, label);
+  // チップは押しても作り直されない（一覧だけ再描画する）ため、選択状態を自前で塗り直す。
+  // 「獲得済み/未獲得」のような排他チップもあるので、1つ押したら全チップを塗り直す。
+  const refreshers = [];
+  const refreshChips = () => { for (const r of refreshers) r(); };
+  const chip = (label, isOn, toggle) => {
+    const b = el('button', {
+      class: `chip${isOn() ? ' on' : ''}`,
+      onclick: () => { toggle(); refreshChips(); onChange(); },
+    }, label);
+    refreshers.push(() => { b.className = `chip${isOn() ? ' on' : ''}`; });
+    return b;
+  };
   const toggleIn = (arr, v) => {
     const i = arr.indexOf(v);
     if (i >= 0) arr.splice(i, 1); else arr.push(v);
@@ -198,7 +213,7 @@ function charFilterControls(f, onChange) {
           el('select', { onchange: (e) => { f.zStat = e.target.value; onChange(); } },
             el('option', { value: '', selected: f.zStat === '' }, '指定なし'),
             STATS.map((s) => el('option', { value: s, selected: f.zStat === s }, STAT_LABELS[s]))))),
-      siteTagFilterUI(f, onChange, chip),
+      siteTagFilterUI(f, onChange, chip, refreshers),
       el('button', {
         class: 'btn secondary small',
         onclick: () => { Object.assign(f, defaultCharFilter()); onChange(true); },
@@ -263,7 +278,7 @@ function el(tag, attrs = {}, ...children) {
     if (v == null) continue;
     if (k === 'class') node.className = v;
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
-    else if (k === 'checked' || k === 'disabled' || k === 'hidden' || k === 'selected' || k === 'readOnly') node[k] = v;
+    else if (k === 'checked' || k === 'disabled' || k === 'hidden' || k === 'selected' || k === 'readOnly' || k === 'open') node[k] = v;
     else if (k === 'value') node.value = v;
     else node.setAttribute(k, v);
   }
@@ -1603,14 +1618,19 @@ function renderChars() {
   const root = $('#chars-view');
   const f = ui.charFilter;
   const grid = el('div', { class: 'char-grid' });
+  const total = Object.keys(state.game.characters).length;
+  const countLine = el('p', { class: 'hint' });
   const rerenderGrid = () => {
     const defs = applyCharSortFilter(Object.values(state.game.characters), f);
+    countLine.textContent = defs.length === total
+      ? `全 ${total} 体 / 所持登録 ${Object.keys(state.my.characters).length} 体。タップで詳細・所持登録。`
+      : `表示中 ${defs.length} 体（全 ${total} 体中）/ 所持登録 ${Object.keys(state.my.characters).length} 体。`;
     grid.replaceChildren(...defs.map((d) =>
       charTile(d, { onclick: () => openCharSheet(String(d.id)) })));
     if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当するキャラがいません。フィルタをリセットしてください。'));
   };
   root.replaceChildren(
-    el('p', { class: 'hint' }, `全 ${Object.keys(state.game.characters).length} 体 / 所持登録 ${Object.keys(state.my.characters).length} 体。タップで詳細・所持登録。`),
+    countLine,
     charFilterControls(f, (reset) => { if (reset) renderChars(); else rerenderGrid(); }),
     grid);
   rerenderGrid();

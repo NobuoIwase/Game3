@@ -61,6 +61,19 @@ test('§33 「ずつ」を含む積み重ね型だけ repeat タグが付く', (
   assert.ok(computeSiteTags(stack, defs).includes('hit_debuff_stack'), '「ずつ」は回数依存');
   const once = charOf({ main_ability: mainOf('▼敵のアーツ攻撃を受けた時(1回)\r\n○敵の気力30減少') });
   assert.ok(!computeSiteTags(once, defs).includes('hit_debuff_stack'), '(1回)は回数依存ではない');
+  const thrice = charOf({ main_ability: mainOf('▼敵のアーツ攻撃を受けた時(3回)\r\n○敵の気力30減少') });
+  assert.ok(computeSiteTags(thrice, defs).includes('hit_debuff_stack'), '(3回)は複数回積み重なる');
+  // 「※交代時、発動回数リセット」は注記であって回数依存ではない
+  const note = charOf({ main_ability: mainOf('▼敵のアーツ攻撃を受けた時(1回)\r\n○敵の気力30減少\r\n※交代時、発動回数リセット') });
+  assert.ok(!computeSiteTags(note, defs).includes('hit_debuff_stack'), '注記の「回数」に反応しない');
+});
+
+test('§33 「受けた回数に応じて」の段階式も回数依存として拾う', () => {
+  const c = charOf({ main_ability: mainOf(
+    '▼控えに戻る時に、敵のアーツ攻撃を受けた回数に応じて\r\n【1回目以上】\r\n○敵全体に全アーツコスト15{{ICN:UpRed}}(10カウント)\r\n【3回目以上】\r\n○敵の気力100減少') });
+  const tags = computeSiteTags(c, defs);
+  assert.ok(tags.includes('leave_debuff'), '控えに戻る時のデバフ');
+  assert.ok(tags.includes('leave_debuff_stack'), '被弾回数に応じた段階式');
 });
 
 test('§33 控えに戻る時のデバフを分類する', () => {
@@ -94,7 +107,6 @@ test('§33 構造から判定する特別タグ（アーツ種別・ZENKAI・ユ
   assert.ok(tags.includes('has_zenkai'));
   assert.ok(tags.includes('has_unique_gauge'));
   assert.ok(tags.includes('has_unique_frag'));
-  assert.ok(tags.includes('has_main_ability'));
 });
 
 test('§33 専用ユニフラの本文もタグ判定の対象になる', () => {

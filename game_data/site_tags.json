@@ -699,12 +699,6 @@
    "label": "ZENKAI覚醒",
    "category": "kit",
    "special": "zenkai"
-  },
-  {
-   "id": "has_main_ability",
-   "label": "メインアビリティあり",
-   "category": "kit",
-   "special": "main_ability"
   }
  ]
 }
