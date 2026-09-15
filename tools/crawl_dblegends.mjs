@@ -738,6 +738,10 @@ async function merge() {
       })),
       equip_ids: detail?.equip_ids || [],
       arts: detail?.arts || [],
+      // アーツ本文はサイト内タグ（§33）の判定材料。公開データに載せないと、
+      // 自動更新が公開データからキャッシュを復元（seedCacheFromData）した際に
+      // 本文が失われ、アーツ系タグが丸ごと消える（§35）。往復できるよう保存する
+      arts_detail: detail?.arts_detail || [],
     };
   }
 
@@ -825,7 +829,6 @@ async function merge() {
   }
 
   // サイト内タグ（§33）: アビリティ本文から「トリガー×効果」で特徴を機械分類する。
-  // 本文（特にアーツ詳細）は大きいので公開データには出さず、ここで判定結果のIDだけを持たせる
   let siteTagDefs = null;
   try { siteTagDefs = JSON.parse(await readFile(join(ROOT, 'game_data', 'site_tags.json'), 'utf8')); }
   catch { /* 定義が無ければサイト内タグは付けない */ }
@@ -840,7 +843,18 @@ async function merge() {
       );
       if (tags.length) { out.site_tags = tags; tagged++; }
     }
-    console.log(`サイト内タグ: ${tagged} 体に付与（定義 ${(siteTagDefs.tags || []).length} 種）`);
+    // アーツ本文が欠けると、アーツ系タグが黙って全部消える（§35で実際に起きた）。
+    // 「本文が無いから0件」を正常として通さず、必ず声を上げる（§1-4 と同じ方針）
+    const total = Object.keys(charactersOut).length;
+    const withArts = Object.values(chars).filter((c) => (c?.arts_detail || []).length).length;
+    console.log(`サイト内タグ: ${tagged} 体に付与（定義 ${(siteTagDefs.tags || []).length} 種）`
+      + ` / アーツ本文あり ${withArts} 体`);
+    if (total > 0 && withArts < total * 0.9) {
+      console.error(`■ アーツ本文を持つキャラが ${withArts}/${total} 体しかありません。`
+        + 'アーツ系タグが大量に欠落します。キャッシュの復元元（公開データ）に arts_detail が'
+        + '入っているか確認してください。');
+      process.exit(1);
+    }
   }
 
   // 効果行レポート（effect_map 整備用）

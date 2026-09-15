@@ -281,3 +281,28 @@ test('§34 タッグキャラは elements に2属性を持つ', async () => {
   assert.deepEqual(dore.elements, ['GRN', 'RED'], 'ドーレ＆ネイズは GRN+RED');
   assert.equal(dore.element, 'GRN', 'element 単体は代表色');
 });
+
+// §35: 自動更新は公開データからクロールキャッシュを復元する（seedCacheFromData）。
+// サイト内タグの判定材料であるアーツ本文を公開データに載せ忘れると、復元後の
+// キャッシュに本文が無くなり、アーツ系タグが全キャラから静かに消える（実際に起きた）。
+test('§35 characters.json はアーツ本文(arts_detail)を持つ（自動更新で往復するため）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const chars = JSON.parse(readFileSync(new URL('../game_data/characters.json', import.meta.url), 'utf8'));
+  const list = Object.values(chars).filter((c) => c && c.id);
+  const withArts = list.filter((c) => (c.arts_detail || []).length);
+  assert.ok(withArts.length > list.length * 0.9,
+    `アーツ本文を持つキャラが ${withArts.length}/${list.length} 体しかない`);
+  const sample = withArts[0].arts_detail[0];
+  assert.ok('id' in sample && 'text' in sample, 'arts_detail は {id, name, text}');
+});
+
+// §35: アーツ系タグが実際に付いていること（上の往復が効いている証拠）
+test('§35 アーツ系のサイト内タグが大量に付いている', async () => {
+  const { readFileSync } = await import('node:fs');
+  const chars = JSON.parse(readFileSync(new URL('../game_data/characters.json', import.meta.url), 'utf8'));
+  const list = Object.values(chars).filter((c) => c && c.id);
+  for (const tag of ['arts_ultimate', 'arts_special', 'ult_ranged', 'sp_ranged']) {
+    const n = list.filter((c) => (c.site_tags || []).includes(tag)).length;
+    assert.ok(n > 100, `${tag} が ${n} 体しかない（アーツ本文の欠落を疑う）`);
+  }
+});
