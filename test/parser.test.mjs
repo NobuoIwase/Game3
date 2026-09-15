@@ -49,3 +49,14 @@ test('対象が無いHTMLでは空の結果を返す（落ちない）', () => {
   assert.deepEqual(parseCharacterListHTML('<p>hello</p>').characters, []);
   assert.deepEqual(parseTagSelectHTML('<p>hello</p>'), {});
 });
+
+// §41: 編成プリセットは my_data に入るので、エクスポート／インポートで引き継げること
+test('§41 emptyMyData は party_presets を持つ（エクスポートに含める）', async () => {
+  const { emptyMyData } = await import('../js/store.js');
+  const d = emptyMyData();
+  assert.ok(Array.isArray(d.party_presets), 'party_presets は配列');
+  assert.ok(Array.isArray(d.parties), 'parties（自動保存）とは別物');
+  // 旧データ（party_presets 無し）を読んでも落ちないこと
+  const merged = { ...emptyMyData(), ...{ fragments: {}, characters: {}, parties: [] } };
+  assert.ok(Array.isArray(merged.party_presets), '旧データには空配列が補われる');
+});

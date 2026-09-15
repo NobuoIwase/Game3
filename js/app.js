@@ -22,6 +22,7 @@ const ui = {
   tab: 'party',
   // mode: 'standard'（バトル3体＋ゼンカイ枠3体） | 'proud'（プラウドバトル: 1戦目3体＋2戦目3体）
   party: { mode: 'standard', memberIds: ['', '', '', '', '', ''], equips: {} }, // equips: cid → [fragId|null,...]
+  presetSel: '', // 編成プリセットの選択中ID（§41）
   displayStat: 'strike_atk',
   opt: {
     targets: 'battle', mode: 'single', stat: 'strike_atk',
@@ -38,7 +39,7 @@ const ui = {
     penalizeUnmetCond: true,
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
-  fragFilter: { q: '', rarity: '', ownedOnly: false },
+  fragFilter: { q: '', rarity: '', ownedOnly: false, owned: '' }, // owned: '' | 'owned' | 'unowned'（§41）
   calc: {
     stat: 'strike_atk', total: 273617, boost: 42080,
     z: 149, zenkai: 0, ll: 30,
@@ -529,27 +530,34 @@ function assignedCount(fid, exclude = null) {
   return n;
 }
 
-function syncPartyToMyData() {
-  state.my.parties = [{
-    name: '編成1',
+/** 今の編成を my_data の形にする（自動保存とプリセット保存で共用 — §41） */
+function currentPartySnapshot(name) {
+  return {
+    name: name || '編成1',
     mode: ui.party.mode,
     // 空きスロットは null で位置を保持（キャラID 0 = 孫悟空 と衝突させない）
     member_ids: ui.party.memberIds.map((x) => (x === '' || x == null ? null : Number(x))),
     battle_ids: battleIds().map(Number),
-    equips: ui.party.equips,
+    equips: JSON.parse(JSON.stringify(ui.party.equips || {})),
     display_stat: ui.displayStat,
-    opt: ui.opt,
-  }];
+    opt: JSON.parse(JSON.stringify(ui.opt)),
+  };
 }
-function restorePartyFromMyData() {
-  const p = state.my.parties?.[0];
+function syncPartyToMyData() {
+  state.my.parties = [currentPartySnapshot('編成1')];
+}
+/** スナップショットを今の編成に読み込む（自動復元とプリセット読込で共用） */
+function applyPartySnapshot(p) {
   if (!p) return;
   const ids = (p.member_ids || []).map((x) => (x == null || x === '' ? '' : String(x)));
   ui.party.memberIds = [0, 1, 2, 3, 4, 5].map((i) => ids[i] || '');
-  ui.party.equips = p.equips || {};
+  ui.party.equips = JSON.parse(JSON.stringify(p.equips || {}));
   ui.party.mode = p.mode === 'proud' ? 'proud' : 'standard';
   if (p.display_stat) ui.displayStat = p.display_stat;
   if (p.opt) Object.assign(ui.opt, p.opt);
+}
+function restorePartyFromMyData() {
+  applyPartySnapshot(state.my.parties?.[0]);
 }
 
 /** 未対応効果の一覧を §6 の文言で表示する */
@@ -655,6 +663,89 @@ function fragTile(f, opts = {}) {
 }
 
 // ---------------------------------------------------------------- 編成タブ
+
+/**
+ * 編成プリセット（§41）。名前を付けて保存・呼び出し・上書き・削除する。
+ * 自動保存の parties[0]（今いじっている編成）とは別物で、party_presets に持つ。
+ */
+function partyPresets() {
+  if (!Array.isArray(state.my.party_presets)) state.my.party_presets = [];
+  return state.my.party_presets;
+}
+
+function partyPresetBar() {
+  const list = partyPresets();
+  const sel = el('select', {
+    id: 'party-preset-sel',
+    style: 'flex:1;min-width:0',
+    onchange: (e) => { ui.presetSel = e.target.value; },
+  },
+    el('option', { value: '' }, list.length ? '— プリセットを選ぶ —' : '— 保存されたプリセットなし —'),
+    list.map((p) => el('option', { value: p.id, selected: ui.presetSel === p.id },
+      `${p.name}（${(p.member_ids || []).filter((x) => x != null).length}体）`)));
+  const current = () => list.find((p) => p.id === ui.presetSel);
+
+  const load = () => {
+    const p = current();
+    if (!p) { showMsg('warn', '■ 読み込むプリセットを選んでください。'); return; }
+    if (!confirm(`「${p.name}」を読み込みます。今の編成は上書きされます。よろしいですか？`)) return;
+    applyPartySnapshot(p);
+    persistMy();
+    renderParty();
+    showMsg('ok', `「${p.name}」を読み込みました。`);
+  };
+  const saveNew = async () => {
+    const name = prompt('プリセット名を入力してください', `編成${list.length + 1}`);
+    if (name == null) return;
+    const trimmed = name.trim();
+    if (!trimmed) { showMsg('warn', '■ 名前を入力してください。'); return; }
+    const p = { ...currentPartySnapshot(trimmed), id: `p${Date.now()}`, saved_at: new Date().toISOString() };
+    list.push(p);
+    ui.presetSel = p.id;
+    await persistMy();
+    renderParty();
+    showMsg('ok', `「${trimmed}」として保存しました。`);
+  };
+  const overwrite = async () => {
+    const p = current();
+    if (!p) { showMsg('warn', '■ 上書きするプリセットを選んでください。'); return; }
+    if (!confirm(`「${p.name}」を今の編成で上書きします。よろしいですか？`)) return;
+    Object.assign(p, currentPartySnapshot(p.name), { id: p.id, saved_at: new Date().toISOString() });
+    await persistMy();
+    renderParty();
+    showMsg('ok', `「${p.name}」を上書きしました。`);
+  };
+  const rename = async () => {
+    const p = current();
+    if (!p) { showMsg('warn', '■ 名前を変えるプリセットを選んでください。'); return; }
+    const name = prompt('新しい名前', p.name);
+    if (name == null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    p.name = trimmed;
+    await persistMy();
+    renderParty();
+  };
+  const remove = async () => {
+    const p = current();
+    if (!p) { showMsg('warn', '■ 削除するプリセットを選んでください。'); return; }
+    if (!confirm(`「${p.name}」を削除します。元に戻せません。よろしいですか？`)) return;
+    state.my.party_presets = list.filter((x) => x.id !== p.id);
+    ui.presetSel = '';
+    await persistMy();
+    renderParty();
+    showMsg('ok', `「${p.name}」を削除しました。`);
+  };
+  const btn = (label, fn, cls = 'btn secondary small') =>
+    el('button', { class: cls, style: 'flex:none', onclick: fn }, label);
+  return el('div', { class: 'card', style: 'padding:8px;margin-bottom:8px' },
+    el('div', { class: 'row', style: 'gap:6px;align-items:center' }, sel, btn('読込', load, 'btn small')),
+    el('div', { class: 'chip-row', style: 'margin-top:6px' },
+      btn('新規保存', saveNew), btn('上書き', overwrite), btn('名前変更', rename), btn('削除', remove)),
+    el('p', { class: 'small-note' },
+      'キャラ6体・装備・最適化の設定をまとめて保存します。'
+      + 'データタブのエクスポートにも含まれるので、機種変更や共有でも引き継げます。'));
+}
 
 /** 現在の編成でのアビリティ補正（編成画面・フラグ詳細で共通に使う） */
 function currentPartyExt(members) {
@@ -851,6 +942,7 @@ function renderParty() {
       : el('div', { class: 'party-summary' },
           el('div', {}, 'バトル3体 ', statSelect, ' 合計'),
           el('div', { class: 'val' }, fmt0(totals[0]))),
+    partyPresetBar(),
     el('div', { class: 'party-grid' }, [0, 1, 2].map(slot)),
     el('div', { class: 'party-grid' }, [3, 4, 5].map(slot)),
     proud
@@ -2117,13 +2209,21 @@ function renderFrags() {
       .filter((x) => f.showTop || !isTournamentOnly(x))
       .filter((x) => !f.rarity || x.rarity === f.rarity)
       .filter((x) => !q || (x.name || '').includes(q))
+      // 所持0にしたフラグメントを一覧で見られるように（§41: これから作る物の確認用）
+      .filter((x) => f.owned === '' || (f.owned === 'owned') === (fragCount(x.id) > 0))
       .sort((a, b) => b.id - a.id);
     grid.replaceChildren(...list.map((x) =>
       fragTile(x, { onclick: () => openFragSheet(String(x.id)) })));
     if (list.length === 0) grid.append(el('p', { class: 'hint' }, '該当なし'));
+    countLine.textContent = list.length === total
+      ? `全 ${total} 件。タップで詳細・所持数の調整（初期値6枚）。`
+      : `表示中 ${list.length} 件（全 ${total} 件中）／ 所持0にしたもの ${zeroCount()} 件。`;
   };
+  const total = Object.keys(state.game.fragments).length;
+  const zeroCount = () => Object.values(state.game.fragments).filter((x) => fragCount(x.id) === 0).length;
+  const countLine = el('p', { class: 'hint' });
   root.replaceChildren(
-    el('p', { class: 'hint' }, `全 ${Object.keys(state.game.fragments).length} 件。タップで詳細・所持数の調整（初期値6枚）。`),
+    countLine,
     el('div', { class: 'filter-row sticky-bar' },
       el('input', { type: 'search', value: f.q, placeholder: 'フラグメント名で検索', oninput: (e) => { f.q = e.target.value; rerenderGrid(); } }),
       el('label', { class: 'check', style: 'margin:0;flex:none' },
@@ -2133,6 +2233,15 @@ function renderFrags() {
         class: `chip${f.rarity === r ? ' on' : ''}`,
         onclick: () => { f.rarity = f.rarity === r ? '' : r; renderFrags(); },
       }, RARITY_LABELS[r] || r))),
+    el('div', { class: 'chip-row' },
+      el('button', {
+        class: `chip${f.owned === 'owned' ? ' on' : ''}`,
+        onclick: () => { f.owned = f.owned === 'owned' ? '' : 'owned'; renderFrags(); },
+      }, '所持しているもの'),
+      el('button', {
+        class: `chip${f.owned === 'unowned' ? ' on' : ''}`,
+        onclick: () => { f.owned = f.owned === 'unowned' ? '' : 'unowned'; renderFrags(); },
+      }, `所持0のもの（${zeroCount()}）`)),
     grid);
   rerenderGrid();
 }

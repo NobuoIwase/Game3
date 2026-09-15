@@ -58,7 +58,9 @@ export async function idbDelete(key) {
 
 /** my_data の空形（§3-4） */
 export function emptyMyData() {
-  return { fragments: {}, characters: {}, parties: [] };
+  // parties[0] は「今いじっている編成」（自動保存）。
+  // party_presets は名前を付けて保存した編成の一覧（§41）。別物なので分けて持つ
+  return { fragments: {}, characters: {}, parties: [], party_presets: [] };
 }
 
 /** game_data オーバーライドの空形（§1-1） */
