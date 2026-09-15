@@ -29,7 +29,10 @@ const ui = {
     preset: 'strike_total', weights: Object.fromEntries(STATS.map((s) => [s, 0])),
     optimizeLeader: true,
     autoZenkai: true, // 最適化時にゼンカイ枠（下段3枠）を所持キャラから自動選出する
-    zenkaiBalance: false, // ゼンカイ枠を「合計最大」ではなく「バトル3体に行き渡らせる」で選ぶ（§36）
+    zenkaiBalance: false, // 旧形式（§36）。zenkaiObjective へ移行済みだが保存データ互換のため残す
+    zenkaiObjective: 'total', // 'total' | 'balance' | 'ace'（§36 / §46）
+    aceId: '',        // エース（重点的に強化するキャラ）のID（§46）
+    aceKeep: 0.6,     // 他メンバーに残す下限の割合（1=均等寄り / 0=完全にエース専用）
     zenkaiOnlyAwakened: true, // ゼンカイ枠はZENKAI覚醒キャラだけから選ぶ（§45。既定ON）
     styleSplit: true, // 打撃/射撃タイプのキャラは自分のタイプに合わせた重みで組む
     // 条件未達の効果を持つフラグを丸ごと除外するか。既定OFF: 除外すると強フラグまで
@@ -213,6 +216,38 @@ function siteTagFilterUI(f, onChange, chip, refreshers = []) {
   return el('details', { open: f.siteTags.length > 0 }, sum,
     el('p', { class: 'small-note' }, 'アビリティ本文から「いつ・何をするか」で自動分類したタグです。複数選ぶと全て満たすキャラだけが残ります。'),
     rows);
+}
+
+/** 保存データの互換を吸収して目的関数を返す（§46） */
+function zenkaiObjectiveOf(m) {
+  if (m.zenkaiObjective) return m.zenkaiObjective;
+  return m.zenkaiBalance === true ? 'balance' : 'total';
+}
+
+/** エース指定のUI（§46）。バトル3体から選び、控えに残す量を決める */
+function aceControls(m) {
+  const battle = battleIds().map(String).map((id) => charDef(id)).filter(Boolean);
+  if (battle.length === 0) {
+    return el('p', { class: 'small-note' }, 'バトル出撃キャラを選ぶと、エースを指定できます。');
+  }
+  if (!battle.some((d) => String(d.id) === String(m.aceId))) m.aceId = String(battle[0].id);
+  return el('div', { style: 'margin:4px 0 6px 22px' },
+    el('label', {}, 'エース（重点的に強化するキャラ）',
+      el('select', { onchange: (e) => { m.aceId = e.target.value; } },
+        battle.map((d) => el('option', { value: String(d.id), selected: String(m.aceId) === String(d.id) }, d.name)))),
+    el('label', {}, `他のメンバーに残す量: ${Math.round((m.aceKeep ?? 0.6) * 100)}%`,
+      el('input', {
+        type: 'range', min: '0', max: '100', step: '10',
+        value: String(Math.round((m.aceKeep ?? 0.6) * 100)),
+        oninput: (e) => {
+          m.aceKeep = Number(e.target.value) / 100;
+          e.target.parentElement.firstChild.textContent = `他のメンバーに残す量: ${e.target.value}%`;
+        },
+      })),
+    el('p', { class: 'small-note' },
+      '「行き渡らせる」で他メンバーが取れる伸び率の、この割合を最低ラインとして確保したうえで、'
+      + 'エースの伸び率を最大化します。0%にすると完全にエース専用、100%にすると「行き渡らせる」に近づきます。'
+      + '装備の取り合いでもエースを優先します。'));
 }
 
 function charFilterControls(f, onChange) {
@@ -1095,16 +1130,16 @@ function renderOptimizerPanel() {
             }), 'ゼンカイ枠も自動選出する（手動で選びたい場合はオフ）'),
           m.autoZenkai !== false
             ? el('div', { style: 'margin:2px 0 6px 22px' },
-                el('label', { class: 'check' },
+                ...[
+                  ['total', 'バトル3体の合計が最大になる3体'],
+                  ['balance', '3体に行き渡る3体（一番伸びない1体を底上げする）'],
+                  ['ace', 'エースを重点的に強化する（他もそこそこ伸ばす）'],
+                ].map(([v, label]) => el('label', { class: 'check' },
                   el('input', {
-                    type: 'radio', name: 'zenkai-obj', checked: m.zenkaiBalance !== true,
-                    onchange: () => { m.zenkaiBalance = false; },
-                  }), 'バトル3体の合計が最大になる3体'),
-                el('label', { class: 'check' },
-                  el('input', {
-                    type: 'radio', name: 'zenkai-obj', checked: m.zenkaiBalance === true,
-                    onchange: () => { m.zenkaiBalance = true; },
-                  }), '3体に行き渡る3体（一番伸びない1体を底上げする）'),
+                    type: 'radio', name: 'zenkai-obj', checked: zenkaiObjectiveOf(m) === v,
+                    onchange: () => { m.zenkaiObjective = v; m.zenkaiBalance = (v === 'balance'); renderParty(); },
+                  }), label)),
+                zenkaiObjectiveOf(m) === 'ace' ? aceControls(m) : null,
                 el('label', { class: 'check' },
                   el('input', {
                     type: 'checkbox', checked: m.zenkaiOnlyAwakened !== false,
@@ -1535,6 +1570,11 @@ async function runOptimize() {
     return { wById, swapped };
   };
 
+  // §46 エース指定モード。バトル枠に実在するIDのときだけ有効
+  const zObjective = zenkaiObjectiveOf(ui.opt);
+  const aceMode = zObjective === 'ace' && ui.opt.aceId != null && ui.opt.aceId !== ''
+    && bIds.some((id) => String(id) === String(ui.opt.aceId));
+
   const baseParams = {
     members, battleIds: bIds, teams, contexts,
     fragmentsById: state.game.fragments, counts,
@@ -1542,6 +1582,9 @@ async function runOptimize() {
     targets: proud ? 'all' : ui.opt.targets,
     avoidUnmetCond: ui.opt.excludeUnmetCond === true,
     unmetPenalty: ui.opt.penalizeUnmetCond !== false ? 0.95 : undefined,
+    // エース指定（§46）: フラグメントの奪い合いが起きたときエースを優先する
+    aceId: aceMode ? String(ui.opt.aceId) : undefined,
+    aceBoost: aceMode ? 1 + 3 * (1 - Math.min(1, Math.max(0, ui.opt.aceKeep ?? 0.6))) : undefined,
   };
   const currentLeaders = proud
     ? [ui.party.memberIds[0] || null, ui.party.memberIds[3] || null]
@@ -1626,7 +1669,9 @@ async function runOptimize() {
         zPick = pickZenkaiMembers({
           battleMembers: battleMembersOnly, candidates: zenkaiCandidates,
           weights, weightsById: battleStyle.wById, effectMap: state.game.effectMap, leaderId: combo[0],
-          balance: ui.opt.zenkaiBalance === true,
+          objective: zObjective,
+          aceId: aceMode ? String(ui.opt.aceId) : undefined,
+          aceWeight: ui.opt.aceKeep,
         });
         mem = [...battleMembersOnly, ...zPick.map((z) => toMember(String(z.id))).filter(Boolean)];
         ctx = battleContexts(mem);
@@ -1779,11 +1824,18 @@ async function runOptimize() {
       showMsg('info', `■ ${d.name} はULTRAアビリティ持ちです。リーダー枠に置くか参照タグのキャラを編成すると発動・強化されます（キャラ詳細で内容を確認できます。与ダメージ等のため❸の比較には含まれません）。`);
     }
   }
+  // §46 エース指定の結果を明示する（何を優先したかが分からないと結果を読めない）
+  const aceMsg = aceMode
+    ? `\nエースは ${charDef(ui.opt.aceId)?.name || ui.opt.aceId} を優先しました` +
+      `（他メンバーに残す量 ${Math.round((ui.opt.aceKeep ?? 0.6) * 100)}%。`
+      + 'ゼンカイ枠の選出とフラグメントの奪い合いの両方でエースを優先します）。'
+    : '';
   showMsg(result.exact ? 'ok' : 'warn',
     (result.exact ? '最適化が完了しました（厳密解）。装備枠に反映しました。'
       : '最適化を打ち切りで終えました（暫定解）。装備枠に反映しました。') +
     (leaderChanged.length ? `\nリーダー枠を ${leaderChanged.join(' / ')} に変更しました（Zアビ特殊ルールで最も高くなる配置）。` : '') +
     ultraLeaderNote +
+    aceMsg +
     zenkaiMsg);
 }
 

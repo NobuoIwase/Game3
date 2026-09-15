@@ -1065,3 +1065,133 @@ test('§45 ゼンカイ枠の「ZENKAI覚醒キャラだけから選ぶ」は既
   // 覚醒キャラが3体未満のときは絞り込まない（枠が埋まらなくなるのを避ける）
   assert.match(src, /zenkaiAwakenedOnly\.length >= 3/, '3体未満なら絞り込みを適用しない');
 });
+
+// §46: エース指定モード。「特定の1体を特に強く、でも他もそこそこ」を数値で担保する。
+// 合計最大化でも均等でもない第3の目的関数で、
+// 「均等に組んだ場合に他メンバーが得られる最小伸び率」の aceWeight 倍を下限に課し、
+// その制約の中でエースの伸び率を最大化する。
+test('§46 ace: エースを最大化しつつ、他メンバーの下限を守る', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zen = (tag, value) => [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },   // エース
+    { character: charaV2(2, [8]), my: myOf() },
+    { character: charaV2(3, [9]), my: myOf() },
+  ];
+  // エース向けの候補は潤沢、他の2体向けは1体ずつ
+  const candidates = [
+    ...[10, 11, 12, 13, 14].map((id) => ({ character: charaV2(id, [99], {}, { zenkai_ability: zen(7, 40) }), my: myOf() })),
+    { character: charaV2(20, [99], {}, { zenkai_ability: zen(8, 38) }), my: myOf() },
+    { character: charaV2(21, [99], {}, { zenkai_ability: zen(9, 38) }), my: myOf() },
+  ];
+  const p = { battleMembers, candidates, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+
+  const bal = pickZenkaiMembers({ ...p, objective: 'balance' }).map((x) => String(x.id));
+  assert.ok(bal.includes('20') && bal.includes('21'), '均等は他2体向けを両方拾う');
+
+  // aceWeight=0（他に残さない）なら、エース専用の3体になる
+  const solo = pickZenkaiMembers({ ...p, objective: 'ace', aceId: '1', aceWeight: 0 }).map((x) => String(x.id));
+  assert.deepEqual(solo.filter((id) => ['20', '21'].includes(id)), [],
+    '下限0ならエース向けだけを集める');
+  assert.equal(solo.length, 3);
+
+  // aceWeight=1（均等と同じ下限）なら、他メンバーを切り捨てられない
+  const keep = pickZenkaiMembers({ ...p, objective: 'ace', aceId: '1', aceWeight: 1 }).map((x) => String(x.id));
+  assert.ok(keep.includes('20') && keep.includes('21'), '下限1なら他2体の枠は守られる');
+});
+
+test('§46 ace: 下限を緩めるほどエースの伸びが単調に増え、他メンバーは減る', async () => {
+  const { pickZenkaiMembers, scoreZenkaiCandidates } = await import('../js/optimizer.js');
+  const zen = (tag, value) => [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },
+    { character: charaV2(2, [8]), my: myOf() },
+    { character: charaV2(3, [9]), my: myOf() },
+  ];
+  const candidates = [
+    ...[10, 11, 12].map((id) => ({ character: charaV2(id, [99], {}, { zenkai_ability: zen(7, 30) }), my: myOf() })),
+    { character: charaV2(20, [99], {}, { zenkai_ability: zen(8, 30) }), my: myOf() },
+    { character: charaV2(21, [99], {}, { zenkai_ability: zen(9, 30) }), my: myOf() },
+  ];
+  const p = {
+    battleMembers, candidates, weights: { strike_atk: 1 }, weightsById: {},
+    effectMap, leaderId: null, objective: 'ace', aceId: '1',
+  };
+  // 選ばれた3体がエース単体に与える恩恵の合計（伸び率の代理指標）。
+  // エース1体だけをバトルメンバーに置いて採点し直せば、候補ごとの取り分が分かる
+  const soloScore = new Map(scoreZenkaiCandidates({
+    battleMembers: [battleMembers[0]], candidates, weights: { strike_atk: 1 }, effectMap, leaderId: null,
+  }).map((x) => [String(x.id), x.delta]));
+  const aceGain = (picks) => picks.reduce((a, x) => a + (soloScore.get(String(x.id)) || 0), 0);
+  const g0 = aceGain(pickZenkaiMembers({ ...p, aceWeight: 0 }));
+  const g1 = aceGain(pickZenkaiMembers({ ...p, aceWeight: 1 }));
+  assert.ok(g0 > g1, `下限を外した方がエースは伸びる（${g0} > ${g1}）`);
+
+  // 下限は「他メンバーが取り得る最大値」ではなく「均等解での他メンバーの最小伸び率」を基準にする。
+  // 前者だと keep=1 がエースを均等解より弱くしてしまう（実データで 62.3% → 41.6%）
+  const gBal = aceGain(pickZenkaiMembers({ ...p, objective: 'balance' }));
+  assert.ok(g1 >= gBal - 1e-6,
+    `keep=1 はエースにとって均等解と同じかそれ以上（${g1} >= ${gBal}）`);
+  // 下限を下げるほどエースの取り分は単調に増える（減ってはいけない）
+  let prev = -Infinity;
+  for (const w of [1, 0.8, 0.6, 0.4, 0.2, 0]) {
+    const g = aceGain(pickZenkaiMembers({ ...p, aceWeight: w }));
+    assert.ok(g >= prev - 1e-6, `keep=${w} でエースの取り分が減った（${g} < ${prev}）`);
+    prev = g;
+  }
+});
+
+test('§46 ace: aceId 未指定なら合計最大化のまま（誤って挙動が変わらない）', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zen = (tag, value) => [{ id: 0, name: 'ZENKAIアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },
+    { character: charaV2(2, [8]), my: myOf() },
+  ];
+  const candidates = [
+    ...[10, 11, 12].map((id) => ({ character: charaV2(id, [99], {}, { zenkai_ability: zen(7, 40) }), my: myOf() })),
+    { character: charaV2(20, [99], {}, { zenkai_ability: zen(8, 39) }), my: myOf() },
+  ];
+  const p = { battleMembers, candidates, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+  const total = pickZenkaiMembers(p).map((x) => String(x.id)).sort();
+  const noAce = pickZenkaiMembers({ ...p, objective: 'ace' }).map((x) => String(x.id)).sort();
+  assert.deepEqual(noAce, total, 'エース未指定の ace は total と同じ');
+  // 実在しないIDを指定しても落ちない
+  const bogus = pickZenkaiMembers({ ...p, objective: 'ace', aceId: '999' });
+  assert.ok(Array.isArray(bogus) && bogus.length <= 3);
+});
+
+// §46: フラグメントの奪い合いでもエースを優先する（ゼンカイ枠だけでは足りない）
+test('§46 ace: 同じフラグを奪い合ったらエースが取る', async () => {
+  const { optimizeParty } = await import('../js/optimizer.js');
+  // A(id=1) と B(id=2) は同じステ。打撃+38% のフラグが1枚しかない
+  const members = [
+    { character: charaV1(1, [], { strike_atk: 200_000 }), my: myOf(1) },
+    { character: charaV1(2, [], { strike_atk: 200_000 }), my: myOf(1) },
+  ];
+  const fragmentsById = {
+    100: frag(100, [{ stat: 'strike_atk', base: true, value: 38 }]),
+    101: frag(101, [{ stat: 'strike_atk', base: true, value: 10 }]),
+    102: frag(102, [{ stat: 'strike_atk', base: true, value: 9 }]),
+  };
+  const counts = { 100: 1, 101: 1, 102: 1 };
+  const base = {
+    members, battleIds: ['1', '2'], teams: [['1', '2']],
+    contexts: { 1: null, 2: null },
+    fragmentsById, counts, weights: { strike_atk: 1 }, effectMap,
+  };
+  const toB = optimizeParty({ ...base, aceId: '2', aceBoost: 3 });
+  assert.ok(toB.assignments['2'].ids.includes('100'), 'エースBが最良フラグを取る');
+  const toA = optimizeParty({ ...base, aceId: '1', aceBoost: 3 });
+  assert.ok(toA.assignments['1'].ids.includes('100'), 'エースAが最良フラグを取る');
+});
+
+test('§46 UI: エース指定の既定値と、下限の既定 60%', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(src, /zenkaiObjective:\s*'total'/, '既定は合計最大化');
+  assert.match(src, /aceKeep:\s*0\.6/, '他メンバーに残す量の既定は60%');
+  // 目的関数・エースIDが最適化に渡っていること（UIだけ作って繋ぎ忘れないように）
+  assert.match(src, /objective:\s*zObjective/, 'pickZenkaiMembers に目的関数を渡す');
+  assert.match(src, /aceId:\s*aceMode \? String\(ui\.opt\.aceId\) : undefined/, 'optimizeParty にもエースを渡す');
+});

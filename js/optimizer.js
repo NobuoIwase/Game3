@@ -337,7 +337,10 @@ function applyResonance(out, members, leaderId, effectMap) {
  * @returns {Array<{id, delta}>} 採点降順・最大3体
  */
 export function pickZenkaiMembers(p) {
-  if (p.balance) return pickZenkaiBalanced(p);
+  const obj = p.objective || (p.balance ? 'balance' : 'total');
+  if (obj === 'balance' || (obj === 'ace' && p.aceId != null && p.aceId !== '')) {
+    return pickZenkaiPooled({ ...p, objective: obj });
+  }
   return scoreZenkaiCandidates(p).slice(0, 3);
 }
 
@@ -361,7 +364,7 @@ export function pickZenkaiMembers(p) {
  * 実データで「合計 -26%・最小伸び率 50.3%」と、総当たりの
  * 「合計 -3%・最小伸び率 65.9%」より両方悪い結果になった）。
  */
-function pickZenkaiBalanced({ battleMembers, candidates, weights, weightsById, effectMap, leaderId }) {
+function pickZenkaiPooled({ battleMembers, candidates, weights, weightsById, effectMap, leaderId, objective, aceId, aceWeight }) {
   if (!battleMembers || battleMembers.length === 0) return [];
   const table = zenkaiEffectTable({ battleMembers, candidates, effectMap, leaderId });
   if (table.length === 0) return [];
@@ -388,14 +391,27 @@ function pickZenkaiBalanced({ battleMembers, candidates, weights, weightsById, e
     }
     return d;
   });
+  // エース（§46）のインデックス。指定が無ければ -1
+  const aceIdx = battleMembers.findIndex((m) => aceId != null && String(m.character.id) === String(aceId));
+  // 他メンバーに残す下限の割合（§46）。
+  // 「行き渡らせる」で達成できる最小伸び率の AW 倍を、他メンバーの最低ラインとして課し、
+  // その制約の中でエースの伸び率を最大化する。1に近いほど均等、0にすると完全にエース専用
+  const AW = Number.isFinite(Number(aceWeight)) ? Number(aceWeight) : 0.6;
   const evaluate = (picked) => {
     const g = gainsOf(picked);
-    let minRel = Infinity, sum = 0;
+    let minRel = Infinity, sum = 0, aceRel = 0, minOther = Infinity;
     for (let i = 0; i < g.length; i++) {
       sum += g[i];
-      if (perMember[i].total > 0) minRel = Math.min(minRel, g[i] / perMember[i].total);
+      const rel = perMember[i].total > 0 ? g[i] / perMember[i].total : 0;
+      if (perMember[i].total > 0) minRel = Math.min(minRel, rel);
+      if (i === aceIdx) aceRel = rel;
+      else if (perMember[i].total > 0) minOther = Math.min(minOther, rel);
     }
-    return { minRel: Number.isFinite(minRel) ? minRel : 0, sum };
+    return {
+      minRel: Number.isFinite(minRel) ? minRel : 0,
+      minOther: Number.isFinite(minOther) ? minOther : 0,
+      aceRel, sum,
+    };
   };
   // プール: 各員を単独で最も伸ばす上位K体の和集合 + 合計上位K体。
   // 「最小を上げる」解はここにしか現れないので、合計順の上位だけでは取りこぼす
@@ -403,26 +419,57 @@ function pickZenkaiBalanced({ battleMembers, candidates, weights, weightsById, e
   const pool = new Map();
   const single = table.map((e) => ({ e, g: gainsOf([e]) }));
   for (let i = 0; i < battleMembers.length; i++) {
-    [...single].sort((a, b) => b.g[i] - a.g[i]).slice(0, K).forEach(({ e }) => pool.set(e.id, e));
+    // エース重視ならエース単独で伸ばす候補を多めに拾う（解はそこに集中するため）
+    const take = objective === 'ace' && i === aceIdx ? K * 2 : K;
+    [...single].sort((a, b) => b.g[i] - a.g[i]).slice(0, take).forEach(({ e }) => pool.set(e.id, e));
   }
   [...single].sort((a, b) => b.g.reduce((x, y) => x + y, 0) - a.g.reduce((x, y) => x + y, 0))
     .slice(0, K).forEach(({ e }) => pool.set(e.id, e));
   const P = [...pool.values()];
   if (P.length <= 3) return P.map((e) => ({ id: e.id, delta: 0, zenkai: e.zenkai }));
   // 総当たり（プールは概ね 90〜120 体 = 12万〜28万通り。内側は加算だけなので十分速い）
-  let best = null, bestScore = { minRel: -Infinity, sum: -Infinity };
   const EPS = 1e-9;
+  const useAce = objective === 'ace' && aceIdx >= 0;
+  // 1周目: 「行き渡らせる」最適（＝他メンバーが取り得る最小伸び率の上限）を求める。
+  // エース重視ではこれを下限の基準に使う（§46: “そこそこ”を数値で担保する）
+  let best = null, bestScore = { minRel: -Infinity, sum: -Infinity };
+  const trios = [];
   for (let a = 0; a < P.length; a++) {
     for (let b = a + 1; b < P.length; b++) {
       for (let c = b + 1; c < P.length; c++) {
         const trio = [P[a], P[b], P[c]];
         const sc = evaluate(trio);
+        if (useAce) trios.push({ trio, sc });
         if (sc.minRel > bestScore.minRel + EPS
           || (Math.abs(sc.minRel - bestScore.minRel) <= EPS && sc.sum > bestScore.sum)) {
           bestScore = sc; best = trio;
         }
       }
     }
+  }
+  if (useAce) {
+    // 2周目: 「他メンバーの最小伸び率が、行き渡らせた場合の floor 倍以上」という
+    // 制約の中でエースの伸び率を最大化する。制約を満たす解が無ければ floor を緩める。
+    //
+    // 下限の基準は「他メンバーが取り得る最大値」ではなく **1周目の均等解での他メンバーの最小伸び率**。
+    // 前者だと floor=1 のとき「他メンバーだけを最大化する解」になり、
+    // エースの伸びが均等解より小さくなる（実データで 62.3% → 41.6% に落ちた）。
+    // 均等解を基準にすれば、均等解自身が必ず制約を満たすので
+    // floor=1 が「均等解と同じかそれ以上」、floor=0 が「エース専用」の連続な目盛りになる。
+    const bestMinAll = bestScore.minOther > 0 ? bestScore.minOther
+      : trios.reduce((m, t) => Math.max(m, t.sc.minOther), 0);
+    let picked = null;
+    for (const floor of [AW, AW * 0.75, AW * 0.5, 0]) {
+      const need = bestMinAll * floor;
+      let bb = null, bs = { aceRel: -Infinity, sum: -Infinity };
+      for (const t of trios) {
+        if (t.sc.minOther + EPS < need) continue;
+        if (t.sc.aceRel > bs.aceRel + EPS
+          || (Math.abs(t.sc.aceRel - bs.aceRel) <= EPS && t.sc.sum > bs.sum)) { bs = t.sc; bb = t.trio; }
+      }
+      if (bb) { picked = { trio: bb, sc: bs }; break; }
+    }
+    if (picked) { best = picked.trio; bestScore = picked.sc; }
   }
   if (!best) return [];
   return best.map((e) => ({ id: e.id, delta: bestScore.sum / best.length, zenkai: e.zenkai }));
@@ -887,12 +934,23 @@ export function optimizeParty(p) {
   // キャラ別重み（weightsById）併用時の奪い合い裁定は、キャラ間で ❸ の桁が異なる
   // （体力特化 vs 打撃特化など）ため、フラグ無し基準値 ❸₀ で正規化してから合算する。
   // キャラ内の組合せ順位は定数除算なので不変（絶対値評価のまま）。
-  if (p.weightsById) {
+  // エース指定（§46）がある場合も、キャラ間を公平に比べてから倍率を掛けたいので正規化する。
+  const aceId = p.aceId != null && p.aceId !== '' ? String(p.aceId) : null;
+  if (p.weightsById || aceId) {
     for (const pc of perChar) {
       if (!pc.ctx) continue;
       const n = pc.ctx.stats.length;
       const base0 = scoreOf(pc.ctx, new Float64Array(n), new Float64Array(n));
       if (base0 > 0) for (const cmb of pc.combos) cmb.score /= base0;
+    }
+  }
+  // エース優遇（§46）: 取り合いになったフラグメントをエースに回す。
+  // 争いが無ければ全員が最良を取れるので、この倍率は結果に影響しない
+  if (aceId) {
+    const boost = Number(p.aceBoost) > 0 ? Number(p.aceBoost) : 2;
+    for (const pc of perChar) {
+      if (String(pc.cid) !== aceId) continue;
+      for (const cmb of pc.combos) cmb.score *= boost;
     }
   }
 
