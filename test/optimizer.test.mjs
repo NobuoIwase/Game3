@@ -715,3 +715,41 @@ test('補正%重視: ❶で正規化した重みなら+1%はどのステでも�
   });
   assert.deepEqual(r.ids, ['10'], '%が大きい打撃+18%を選ぶ（絶対値の大きい体力+7%に負けない）');
 });
+
+// §36: ゼンカイ枠の「行き渡らせる」選び方。
+// 合計最大化は誰が受け取るかを問わないので、条件がよく噛み合う1体に集中しうる。
+test('§36 balance: 合計を少し落としても一番伸びないキャラを底上げする', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  // バトル3体: 1と2はタグ7、3はタグ8（=3を伸ばせる候補は限られる）
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },
+    { character: charaV2(2, [7]), my: myOf() },
+    { character: charaV2(3, [8]), my: myOf() },
+  ];
+  // タグ7を大きく伸ばす候補が多数、タグ8を伸ばす候補は控えめに1体だけ
+  const candidates = [
+    ...[10, 11, 12, 13].map((id) => ({ character: charaV2(id, [99], {}, { z_ability: zAb(7, 40) }), my: myOf() })),
+    { character: charaV2(20, [99], {}, { z_ability: zAb(8, 25) }), my: myOf() },
+  ];
+  const p = { battleMembers, candidates, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+
+  const total = pickZenkaiMembers(p).map((x) => String(x.id));
+  assert.ok(!total.includes('20'), '合計最大化はタグ8の候補を選ばない（1・2に集中）');
+
+  const bal = pickZenkaiMembers({ ...p, balance: true }).map((x) => String(x.id));
+  assert.ok(bal.includes('20'), 'バランスは「3」を伸ばせる唯一の候補を必ず拾う');
+  assert.equal(bal.length, 3);
+  assert.equal(new Set(bal).size, 3, '同じキャラを重複して選ばない');
+});
+
+// §36: 誰も伸ばせない（恩恵ゼロ）の場合でも落ちないこと
+test('§36 balance: 候補が少ない・恩恵ゼロでも安全に返す', async () => {
+  const { pickZenkaiMembers } = await import('../js/optimizer.js');
+  const battleMembers = [{ character: charaV2(1, [7]), my: myOf() }];
+  const p = { battleMembers, candidates: [], weights: { strike_atk: 1 }, effectMap, leaderId: null };
+  assert.deepEqual(pickZenkaiMembers({ ...p, balance: true }), []);
+  const few = [{ character: charaV2(10, [99]), my: myOf() }];
+  const r = pickZenkaiMembers({ ...p, candidates: few, balance: true });
+  assert.ok(Array.isArray(r) && r.length <= 3);
+});

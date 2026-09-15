@@ -26,6 +26,7 @@ const ui = {
     preset: 'strike_total', weights: Object.fromEntries(STATS.map((s) => [s, 0])),
     optimizeLeader: true,
     autoZenkai: true, // 最適化時にゼンカイ枠（下段3枠）を所持キャラから自動選出する
+    zenkaiBalance: false, // ゼンカイ枠を「合計最大」ではなく「バトル3体に行き渡らせる」で選ぶ（§36）
     styleSplit: true, // 打撃/射撃タイプのキャラは自分のタイプに合わせた重みで組む
     // 条件未達の効果を持つフラグを丸ごと除外するか。既定OFF: 除外すると強フラグまで
     // 候補から消えて弱い装備になりがち（未達の効果はもともと0価値で公平に評価される）
@@ -835,11 +836,28 @@ function renderOptimizerPanel() {
         onchange: (e) => { m.optimizeLeader = e.target.checked; },
       }), 'リーダー枠も最適化する（Zアビ特殊ルールを考慮して入替え）'),
     ui.party.mode !== 'proud'
-      ? el('label', { class: 'check' },
-          el('input', {
-            type: 'checkbox', checked: m.autoZenkai !== false,
-            onchange: (e) => { m.autoZenkai = e.target.checked; },
-          }), 'ゼンカイ枠も自動選出する（所持キャラからバトル3体への恩恵最大の3体。手動で選びたい場合はオフ）')
+      ? el('div', {},
+          el('label', { class: 'check' },
+            el('input', {
+              type: 'checkbox', checked: m.autoZenkai !== false,
+              onchange: (e) => { m.autoZenkai = e.target.checked; renderParty(); },
+            }), 'ゼンカイ枠も自動選出する（手動で選びたい場合はオフ）'),
+          m.autoZenkai !== false
+            ? el('div', { style: 'margin:2px 0 6px 22px' },
+                el('label', { class: 'check' },
+                  el('input', {
+                    type: 'radio', name: 'zenkai-obj', checked: m.zenkaiBalance !== true,
+                    onchange: () => { m.zenkaiBalance = false; },
+                  }), 'バトル3体の合計が最大になる3体'),
+                el('label', { class: 'check' },
+                  el('input', {
+                    type: 'radio', name: 'zenkai-obj', checked: m.zenkaiBalance === true,
+                    onchange: () => { m.zenkaiBalance = true; },
+                  }), '3体に行き渡る3体（一番伸びない1体を底上げする）'),
+                el('p', { class: 'small-note' },
+                  '合計だと、条件がよく噛み合う1体（2属性のタッグキャラなど）に恩恵が偏ることがあります。'
+                  + '「行き渡る」は合計を少し犠牲にして、一番伸びないキャラの伸び率を上げます。'))
+            : null)
       : null,
     el('label', { class: 'check' },
       el('input', {
@@ -1298,6 +1316,7 @@ async function runOptimize() {
         zPick = pickZenkaiMembers({
           battleMembers: battleMembersOnly, candidates: zenkaiCandidates,
           weights, weightsById: battleStyle.wById, effectMap: state.game.effectMap, leaderId: combo[0],
+          balance: ui.opt.zenkaiBalance === true,
         });
         mem = [...battleMembersOnly, ...zPick.map((z) => toMember(String(z.id))).filter(Boolean)];
         ctx = battleContexts(mem);

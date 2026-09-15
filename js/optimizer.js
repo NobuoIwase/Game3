@@ -273,7 +273,121 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
  * @returns {Array<{id, delta}>} 採点降順・最大3体
  */
 export function pickZenkaiMembers(p) {
+  if (p.balance) return pickZenkaiBalanced(p);
   return scoreZenkaiCandidates(p).slice(0, 3);
+}
+
+/**
+ * ゼンカイ枠を「バトル3体に行き渡らせる」選び方（§36）。
+ *
+ * 既定は「バトル3体の増分の合計」の最大化で、誰が受け取るかは問わない。そのため
+ * 条件が噛み合う1体に恩恵が集中しても、合計が大きければそれが選ばれる
+ * （2属性のタッグキャラは属性条件のアビリティを両取りするので特に集中しやすい）。
+ * 実戦では3体とも戦うので、合計を多少落としても全員を底上げしたいことがある。
+ *
+ * 目的関数を「各員の伸び率（増分/❶）のうち最小のものを最大化する」に変える。
+ * 同点なら合計が大きい方を採る。伸び率で見るのは、❶ の大きさが違う3体を
+ * 絶対値で比べると ❶ の大きいキャラばかり優遇されてしまうため。
+ *
+ * 探索は「各員を単独で伸ばす上位K体の和集合」をプールにした総当たり。
+ * 貪欲法は使えない（最初の1体を最小値だけで選ぶと局所解に落ち、
+ * 実データで「合計 -26%・最小伸び率 50.3%」と、総当たりの
+ * 「合計 -3%・最小伸び率 65.9%」より両方悪い結果になった）。
+ */
+function pickZenkaiBalanced({ battleMembers, candidates, weights, weightsById, effectMap, leaderId }) {
+  if (!battleMembers || battleMembers.length === 0) return [];
+  const table = zenkaiEffectTable({ battleMembers, candidates, effectMap, leaderId });
+  if (table.length === 0) return [];
+  const wOf = (m) => (weightsById && weightsById[String(m.character.id)]) || weights;
+  // 各員について、重みが効くステータスの ❶ を先に引いておく（内側ループから外す）
+  const perMember = battleMembers.map((m) => {
+    const w = wOf(m);
+    const stats = ALL_STATS.filter((s) => (w[s] || 0) && (statBase(m.character, m.my, s)?.base || 0) > 0);
+    const base = stats.map((s) => statBase(m.character, m.my, s).base);
+    return { stats, base, w, total: stats.reduce((a, s, i) => a + w[s] * base[i], 0) };
+  });
+  const gainsOf = (picked) => perMember.map((pm, i) => {
+    let d = 0;
+    for (let k = 0; k < pm.stats.length; k++) {
+      const s = pm.stats[k];
+      let corr = 0, nonBase = 0;
+      for (const e of picked) {
+        const pe = e.per[i];
+        corr += pe.corr[s] || 0;
+        nonBase += pe.nonBase[s] || 0;
+      }
+      if (corr <= 0 && nonBase <= 0) continue;
+      d += pm.w[s] * pm.base[k] * (((corr * 0.01 + 1) * (nonBase * 0.01 + 1)) - 1);
+    }
+    return d;
+  });
+  const evaluate = (picked) => {
+    const g = gainsOf(picked);
+    let minRel = Infinity, sum = 0;
+    for (let i = 0; i < g.length; i++) {
+      sum += g[i];
+      if (perMember[i].total > 0) minRel = Math.min(minRel, g[i] / perMember[i].total);
+    }
+    return { minRel: Number.isFinite(minRel) ? minRel : 0, sum };
+  };
+  // プール: 各員を単独で最も伸ばす上位K体の和集合 + 合計上位K体。
+  // 「最小を上げる」解はここにしか現れないので、合計順の上位だけでは取りこぼす
+  const K = Math.max(8, Math.ceil(90 / Math.max(1, battleMembers.length)));
+  const pool = new Map();
+  const single = table.map((e) => ({ e, g: gainsOf([e]) }));
+  for (let i = 0; i < battleMembers.length; i++) {
+    [...single].sort((a, b) => b.g[i] - a.g[i]).slice(0, K).forEach(({ e }) => pool.set(e.id, e));
+  }
+  [...single].sort((a, b) => b.g.reduce((x, y) => x + y, 0) - a.g.reduce((x, y) => x + y, 0))
+    .slice(0, K).forEach(({ e }) => pool.set(e.id, e));
+  const P = [...pool.values()];
+  if (P.length <= 3) return P.map((e) => ({ id: e.id, delta: 0, zenkai: e.zenkai }));
+  // 総当たり（プールは概ね 90〜120 体 = 12万〜28万通り。内側は加算だけなので十分速い）
+  let best = null, bestScore = { minRel: -Infinity, sum: -Infinity };
+  const EPS = 1e-9;
+  for (let a = 0; a < P.length; a++) {
+    for (let b = a + 1; b < P.length; b++) {
+      for (let c = b + 1; c < P.length; c++) {
+        const trio = [P[a], P[b], P[c]];
+        const sc = evaluate(trio);
+        if (sc.minRel > bestScore.minRel + EPS
+          || (Math.abs(sc.minRel - bestScore.minRel) <= EPS && sc.sum > bestScore.sum)) {
+          bestScore = sc; best = trio;
+        }
+      }
+    }
+  }
+  if (!best) return [];
+  return best.map((e) => ({ id: e.id, delta: bestScore.sum / best.length, zenkai: e.zenkai }));
+}
+
+/**
+ * 候補 × バトル各員の {corr, nonBase} を一度だけ作る。
+ * memberAbilityGroups が候補数ぶん走るのが一番重いので、合計最大化・バランスの
+ * どちらの選び方でも使い回せるようここで切り出している。
+ */
+function zenkaiEffectTable({ battleMembers, candidates, effectMap, leaderId }) {
+  const leader = leaderId != null && leaderId !== '' ? String(leaderId) : null;
+  const out = [];
+  for (const c of candidates) {
+    const ab = memberAbilityGroups({ ...c, effectMap });
+    const per = battleMembers.map((m) => {
+      const mid = String(m.character.id);
+      const corr = {}, nonBase = {};
+      const add = (effects) => {
+        for (const e of effects) {
+          if (e.base === false) nonBase[e.stat] = (nonBase[e.stat] || 0) + e.value;
+          else corr[e.stat] = (corr[e.stat] || 0) + e.value;
+        }
+      };
+      // リーダーは他キャラのZアビをタグ無視で受ける（§12-3）
+      for (const g of ab.z) if (conditionMatches(g.cond, m.character) || (leader && mid === leader)) add(g.effects);
+      for (const g of ab.zenkai) if (conditionMatches(g.cond, m.character)) add(g.effects);
+      return { corr, nonBase };
+    });
+    out.push({ id: c.character.id, per, zenkai: ab.zenkai.length > 0 ? 1 : 0 });
+  }
+  return out;
 }
 
 /**
