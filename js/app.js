@@ -30,6 +30,7 @@ const ui = {
     optimizeLeader: true,
     autoZenkai: true, // 最適化時にゼンカイ枠（下段3枠）を所持キャラから自動選出する
     zenkaiBalance: false, // ゼンカイ枠を「合計最大」ではなく「バトル3体に行き渡らせる」で選ぶ（§36）
+    zenkaiOnlyAwakened: true, // ゼンカイ枠はZENKAI覚醒キャラだけから選ぶ（§45。既定ON）
     styleSplit: true, // 打撃/射撃タイプのキャラは自分のタイプに合わせた重みで組む
     // 条件未達の効果を持つフラグを丸ごと除外するか。既定OFF: 除外すると強フラグまで
     // 候補から消えて弱い装備になりがち（未達の効果はもともと0価値で公平に評価される）
@@ -670,6 +671,47 @@ function fragTile(f, opts = {}) {
 // ---------------------------------------------------------------- 編成タブ
 
 /**
+ * ZENKAIアビリティの行き渡り（§45）。
+ * ZENKAIアビは属性条件つきが多く、属性によっては**誰からも乗らない**ことがある。
+ * 「打撃特化にしたキャラより耐久特化のキャラの方が打撃が高い」といった違和感の正体が
+ * これなので、バトル3体それぞれが何件受け取っているかを常に見せる。
+ */
+function zenkaiCoverageView(members) {
+  if (ui.party.mode !== 'standard' || members.length === 0) return null;
+  const bSet = new Set(battleIds().map(String));
+  const battle = members.filter((m) => bSet.has(String(m.character.id)));
+  if (battle.length === 0) return null;
+  const rows = battle.map((t) => {
+    let hits = 0;
+    const sum = {};
+    for (const src of members) {
+      const ab = memberAbilityGroups({ character: src.character, my: src.my, effectMap: state.game.effectMap });
+      const got = sumGroupsFor(ab.zenkai, t.character, false);
+      if (got.total > 0) {
+        hits++;
+        for (const [k, v] of Object.entries({ ...got.base, ...got.nonBase })) sum[k] = (sum[k] || 0) + v;
+      }
+    }
+    return { name: t.character.name, hits, sum };
+  });
+  if (rows.every((r) => r.hits === 0) && !members.some((m) => m.character.zenkai)) return null;
+  const zero = rows.filter((r) => r.hits === 0);
+  return el('div', { class: 'card sub-card', style: 'margin-bottom:8px' },
+    el('h3', {}, 'ZENKAIアビリティの行き渡り'),
+    rows.map((r) => el('div', { class: 'effline' },
+      el('span', { class: r.hits > 0 ? 'ultra-cond-ok' : 'ultra-cond-ng' },
+        `${r.name}: ${r.hits > 0 ? `${r.hits}件` : '0件（誰からも乗っていません）'}`),
+      r.hits > 0 ? el('span', { class: 'small-note' },
+        ' ' + Object.entries(r.sum).map(([k, v]) => `${STAT_LABELS[k] || k}+${v}%`).join(' / ')) : null)),
+    zero.length
+      ? el('p', { class: 'small-note' },
+          `${zero.map((r) => r.name).join('・')} には ZENKAIアビが1件も乗っていません。`
+          + 'ZENKAIアビは「属性＋タグ」条件が多く、属性によっては該当キャラがほとんど存在しません。'
+          + 'キャラ詳細の「ゼンカイ枠に置けるZENKAI覚醒キャラ」で候補数を確認できます。')
+      : null);
+}
+
+/**
  * パーティ全体の「力の共鳴」サマリ（§43）。
  * ULTRAキャラが何人いて、それぞれ何%受け取れているかを編成画面に出す。
  * タグを揃えるほど伸びるので、編成を組み替える判断材料になる。
@@ -977,6 +1019,7 @@ function renderParty() {
           el('div', {}, 'バトル3体 ', statSelect, ' 合計'),
           el('div', { class: 'val' }, fmt0(totals[0]))),
     partyPresetBar(),
+    zenkaiCoverageView(members),
     resonanceSummary(members),
     el('div', { class: 'party-grid' }, [0, 1, 2].map(slot)),
     el('div', { class: 'party-grid' }, [3, 4, 5].map(slot)),
@@ -1062,10 +1105,17 @@ function renderOptimizerPanel() {
                     type: 'radio', name: 'zenkai-obj', checked: m.zenkaiBalance === true,
                     onchange: () => { m.zenkaiBalance = true; },
                   }), '3体に行き渡る3体（一番伸びない1体を底上げする）'),
+                el('label', { class: 'check' },
+                  el('input', {
+                    type: 'checkbox', checked: m.zenkaiOnlyAwakened !== false,
+                    onchange: (e) => { m.zenkaiOnlyAwakened = e.target.checked; },
+                  }), 'ZENKAI覚醒キャラだけから選ぶ'),
                 el('p', { class: 'small-note' },
                   'ZENKAIアビは属性条件つきが多く、狙える候補の数が属性によって大きく違います'
                   + '（1枠あたりの価値はほぼ互角なので、候補が多い属性のキャラに偏りがちです）。'
-                  + '「行き渡る」は合計を少し犠牲にして、一番伸びないキャラの伸び率を上げます。'))
+                  + '「行き渡る」は合計を少し犠牲にして、一番伸びないキャラの伸び率を上げます。'
+                  + 'また、ZENKAIアビは1体にしか乗らないことが多いのに対しZアビは全員に乗るため、'
+                  + '合計だけで選ぶとZアビの大きい非ZENKAIキャラが枠を占めることがあります（§45）。'))
             : null)
       : null,
     el('label', { class: 'check' },
@@ -1543,7 +1593,7 @@ async function runOptimize() {
     return def ? { character: def, my: charMy(cid) || defaultCharMy(def) } : null;
   };
   // 全キャラ所持が標準（own_all）なら全キャラが候補。オフなら登録済みキャラのみ
-  const zenkaiCandidates = autoZenkai
+  const zenkaiPoolAll = autoZenkai
     ? (state.my.own_all !== false
         ? Object.values(state.game.characters)
             .filter((d) => !battleSet.has(String(d.id)) && isOwned(String(d.id)))
@@ -1551,6 +1601,15 @@ async function runOptimize() {
         : Object.keys(state.my.characters || {})
             .filter((cid) => !battleSet.has(String(cid)) && isOwned(cid)).map(toMember).filter(Boolean))
     : [];
+  // ゼンカイ枠はZENKAI覚醒キャラだけから選ぶ（§45）。
+  // ZENKAIアビは属性条件で1体にしか乗らないことが多く、Zアビは全員に乗るため、
+  // 合計だけで採点すると「Zアビが大きい非ZENKAIキャラ」が枠を占めてしまう。
+  // 枠の名前と期待に合わせて既定ONにし、外した場合の差は最適化後に知らせる
+  const onlyAwakened = ui.opt.zenkaiOnlyAwakened !== false;
+  const zenkaiAwakenedOnly = zenkaiPoolAll.filter((m) => m.character.zenkai);
+  const zenkaiCandidates = onlyAwakened && zenkaiAwakenedOnly.length >= 3
+    ? zenkaiAwakenedOnly
+    : zenkaiPoolAll;
 
   const computingMsg = showMsg('info', '最適化を計算中…');
   const itemsCache = {}; // フラグメント寄与はリーダー非依存なので候補間で再利用する
@@ -1624,7 +1683,10 @@ async function runOptimize() {
       ? `（所持登録済みの ${poolN} 体から選出。未登録のキャラは候補に入りません）`
       : `（所持 ${poolN} 体から選出）`;
     if (zIds.length) {
-      zenkaiMsg = `\nゼンカイ枠を自動選出しました${poolNote}: ${zIds.map((id) => charDef(id)?.name || id).join(' / ')}` +
+      const awakenedNote = onlyAwakened && zenkaiAwakenedOnly.length >= 3
+        ? `（ZENKAI覚醒キャラ ${zenkaiAwakenedOnly.length} 体に絞って選出）`
+        : (onlyAwakened ? '（ZENKAI覚醒キャラが3体未満のため、絞り込みは適用していません）' : '');
+      zenkaiMsg = `\nゼンカイ枠を自動選出しました${poolNote}${awakenedNote}: ${zIds.map((id) => charDef(id)?.name || id).join(' / ')}` +
         (zIds.length < 3 ? `（バトル3体に恩恵のある候補が ${zIds.length} 体でした）` : '');
       // 候補が全体の2割未満なら、取りこぼしの可能性が高いので明示的に知らせる
       if (state.my.own_all === false && poolN < allN * 0.2) {

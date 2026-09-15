@@ -1030,3 +1030,38 @@ test('§43 打撃/射撃の「総合重視」は反対側の攻撃を計上し�
     assert.match(w, /hp:\s*0\.08/, '体力も少し引き上げる');
   }
 });
+
+// §45: ZENKAIアビは1体にしか乗らないことが多いのに対し、Zアビは全員に乗る。
+// そのため「合計」だけで採点すると、Zアビの大きい非ZENKAIキャラがゼンカイ枠を占める。
+test('§45 Zアビの大きい非ZENKAIキャラは合計採点でZENKAI覚醒キャラに勝ちうる', async () => {
+  const { scoreZenkaiCandidates } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const zen = (el, value) => [1, 2, 3, 4].map((n) => ({
+    id: n, name: `ZENKAIアビリティ${n}`,
+    groups: [{ cond: [[{ element: el }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }],
+  }));
+  // バトル3体は全員タグ7。属性は1体だけ RED
+  const battleMembers = [
+    { character: { ...charaV2(1, [7]), element: 'RED' }, my: myOf() },
+    { character: { ...charaV2(2, [7]), element: 'PUR' }, my: myOf() },
+    { character: { ...charaV2(3, [7]), element: 'PUR' }, my: myOf() },
+  ];
+  // 非ZENKAI: Zアビ+30 が3体全員に乗る = 90 相当
+  const plain = { character: charaV2(10, [99], {}, { z_ability: zAb(7, 30) }), my: myOf() };
+  // ZENKAI覚醒: Zアビ+10（全員） + ZENKAIアビ+40（REDの1体だけ）= 70 相当
+  const awakened = { character: charaV2(11, [99], {}, { z_ability: zAb(7, 10), zenkai_ability: zen('RED', 40) }), my: myOf(3, { zenkai_lv: 7 }) };
+  const p = { battleMembers, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+  const sc = scoreZenkaiCandidates({ ...p, candidates: [plain, awakened] });
+  assert.equal(String(sc[0].id), '10', '合計では非ZENKAIキャラが勝つ（これが違和感の正体）');
+  // ZENKAI覚醒だけに絞れば当然そちらが選ばれる
+  const only = scoreZenkaiCandidates({ ...p, candidates: [awakened] });
+  assert.equal(String(only[0].id), '11');
+});
+
+test('§45 ゼンカイ枠の「ZENKAI覚醒キャラだけから選ぶ」は既定ON', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(src, /zenkaiOnlyAwakened:\s*true/, '既定値はON');
+  // 覚醒キャラが3体未満のときは絞り込まない（枠が埋まらなくなるのを避ける）
+  assert.match(src, /zenkaiAwakenedOnly\.length >= 3/, '3体未満なら絞り込みを適用しない');
+});
