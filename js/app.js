@@ -118,6 +118,32 @@ function applyCharSortFilter(defs, f) {
   return list;
 }
 
+/**
+ * アビリティ効果1件の表示名。与ダメージ（§37）は最終火力への乗算であって
+ * ステータス補正ではないので、「打撃攻撃力」ではなく「打撃与ダメージ」と出す。
+ * ここを間違えると、ステータス画面に出ない値をステータス補正と誤解させてしまう。
+ */
+function effectLabel(e) {
+  if (e.damage) {
+    if (e.stat === 'strike_atk') return '打撃与ダメージ';
+    if (e.stat === 'blast_atk') return '射撃与ダメージ';
+    return '与ダメージ';
+  }
+  return `${e.base === false ? '' : '基礎'}${STAT_LABELS[e.stat] || e.stat}`;
+}
+
+/**
+ * アビリティ条件のトークン1つを日本語にする。
+ * 条件には「タグID指定」と「属性指定（{element:'RED'}）」の2形式があり、
+ * 属性形式を取りこぼすと「不明」と表示されてしまう（実際にそうなっていた）。
+ */
+function condTokenLabel(tk, tags) {
+  if (tk.element) return String(tk.element);
+  if (tk.name) return tk.name;
+  if (tk.tag != null) return tags?.[String(tk.tag)] || `タグ${tk.tag}`;
+  return '不明';
+}
+
 /** ソート/フィルタ操作UI（キャラタブと編成のキャラ選択で共用） */
 /**
  * サイト内タグ（§33）の絞り込みUI。系統ごとにたたんで並べる。
@@ -1755,8 +1781,7 @@ function openCharSheet(cid) {
   // 「身に覚えのない補正」が計算に残り続けるため
   const abilityPreview = () => {
     const { z, zenkai, deploy } = memberAbilityGroups({ character: def, my, effectMap: state.game.effectMap });
-    const tagLabel = (tk) => tk.name || (tk.tag != null
-      ? (state.game.tags?.[String(tk.tag)] || `タグ${tk.tag}`) : '不明');
+    const tagLabel = (tk) => condTokenLabel(tk, state.game.tags);
     const condText = (cond) => (!cond || cond.length === 0) ? ''
       : `（条件: ${cond.map((orSet) => orSet.map(tagLabel).join('かつ')).join(' または ')}）`;
     const inBattle = battleIds().map(String).includes(cid);
@@ -1772,7 +1797,7 @@ function openCharSheet(cid) {
         for (const e of g.effects) {
           lines.push({
             manual,
-            text: `${label}${manual ? '【手入力】' : ''}: ${e.base ? '基礎' : ''}${STAT_LABELS[e.stat] || e.stat} +${e.value}%${condText(g.cond)}${note}`,
+            text: `${label}${manual ? '【手入力】' : ''}: ${effectLabel(e)} +${e.value}%${condText(g.cond)}${note}`,
           });
         }
       }
@@ -1830,17 +1855,26 @@ function openCharSheet(cid) {
           if (!matched && !viaLeader) continue;
           if (viaLeader) leaderOnly = true;
           for (const e of g.effects) {
-            const key = `${e.base === false ? '' : '基礎'}${STAT_LABELS[e.stat] || e.stat}`;
+            const key = effectLabel(e);
             eff.set(key, (eff.get(key) || 0) + e.value);
           }
         }
       }
       rows.push({ name: m.character.name, eff, leaderOnly });
     }
+    // 合計は「今の最適化目標の重み」で換算した値。%の合計とは一致しないので、
+    // どの重みで換算したのかを必ず併記する（%が大きい方が必ず高得点、ではない）
+    const objLabel = battleMembers.length
+      ? effectiveWeightsFor(String(battleMembers[0].character.id)).label
+      : 'パーティ目標';
     return el('div', {},
       el('h3', {}, 'このパーティへの恩恵（ゼンカイ枠に置いた場合）'),
       el('div', { class: 'effline', style: 'font-weight:900' },
         `重み換算の合計: +${fmt(total, 0)}`),
+      el('p', { class: 'small-note' },
+        `換算に使った重み: ${objLabel}。`
+        + '下の%は素の数値で、合計はこの重みを掛けた後の値です。'
+        + '重みの小さいステータスに偏った補正は、%が大きくても合計は伸びません。'),
       rows.map((r) => el('div', { class: 'effline' },
         r.eff.size === 0
           ? el('span', { class: 'ultra-cond-ng' }, `${r.name}: 乗らない（条件を満たさない）`)

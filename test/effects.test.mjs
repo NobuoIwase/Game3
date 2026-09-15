@@ -237,3 +237,31 @@ test('選択式スロット: 条件を満たす選択肢のうち実効値最大
   assert.equal(r3.effects.length, 0);
   assert.equal(r3.conditionalOff.length, 2);
 });
+
+// §37 表示: 与ダメージは「打撃攻撃力」ではなく「打撃与ダメージ」として出す必要がある。
+// （ステータス画面に出ない値をステータス補正と誤解させないため）
+test('§37 与ダメージ効果は damage フラグとステータスから種別が分かる', () => {
+  const strike = resolveEffect({ text: '打撃アーツ与ダメージ', value: 3 }, effectMap);
+  assert.equal(strike.effects[0].damage, true);
+  assert.equal(strike.effects[0].stat, 'strike_atk');
+  const blast = resolveEffect({ text: '射撃与ダメージ', value: 10 }, effectMap);
+  assert.equal(blast.effects[0].damage, true);
+  assert.equal(blast.effects[0].stat, 'blast_atk');
+  // 通常の基礎なし補正には damage が付かない（表示を取り違えないための境界）
+  const plain = resolveEffect({ text: '打撃攻撃力', value: 20 }, effectMap);
+  assert.equal(plain.effects[0].damage, undefined);
+  assert.equal(plain.effects[0].base, false);
+});
+
+// §39: アビリティ条件には「タグID指定」と「属性指定」の2形式があり、
+// 属性形式を取りこぼすと画面に「不明」と出てしまう（実際に出ていた）。
+test('§39 ZENKAIアビ条件の属性指定は2形式ある（タグID / element）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const chars = JSON.parse(readFileSync(new URL('../game_data/characters.json', import.meta.url), 'utf8'));
+  const byNo = (n) => Object.values(chars).find((c) => c && c.card_no === n);
+  const cooler = byNo('DBL51-01S');   // {element:'RED'} 形式
+  const tapion = byNo('DBL19-03S');   // {tag:15000,name:'RED'} 形式
+  const cond = (c) => c.zenkai_ability[3].groups[0].cond[0];
+  assert.ok(cond(cooler).some((t) => t.element === 'RED'), '最終形態クウラは element 形式');
+  assert.ok(cond(tapion).some((t) => t.tag === 15000), '勇者タピオンはタグID形式');
+});
