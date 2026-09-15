@@ -157,13 +157,17 @@ export function abilityCorrections(members, battleIds, effectMap, opts = {}) {
   const zero = () => Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
   const out = {};
   for (const m of members) {
-    out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), warnings: [], unknown: [] };
+    out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), damage: zero(), warnings: [], unknown: [] };
   }
   const resolved = members.map((m) => ({ m, ab: memberAbilityGroups({ ...m, effectMap }) }));
 
   const applyEffectsTo = (effects, tid, bucket, srcMember) => {
     for (const e of effects) {
-      if (e.base === false) {
+      // 与ダメージ（§37）は最終火力への乗算。ゲームのステータス画面には出ないので
+      // 表示用の ❸ に混ぜず専用バケツへ入れる（スコア側では乗算項として効かせる）
+      if (e.damage) {
+        out[tid].damage[e.stat] += e.value;
+      } else if (e.base === false) {
         out[tid].extNonBase[e.stat] += e.value;
         // 擬似ステータス（体力被回復量など — §25）は元々%加算の効果で
         // 基礎あり/なしの区別が無いため、未検証形式の警告は出さない
@@ -242,7 +246,7 @@ export function partyAbilityCorrections({ members, battleIds, teams, effectMap, 
     const zero = () => Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
     const out = {};
     for (const m of members) {
-      out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), warnings: [], unknown: [] };
+      out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), damage: zero(), warnings: [], unknown: [] };
     }
     teams.forEach((teamIds, i) => {
       const idSet = new Set(teamIds.map(String));
@@ -480,9 +484,12 @@ function makeScoreContext(member, ext, weights, weightedStats, warnings) {
       stats.push(null);
       continue;
     }
-    const e = ext || { z: {}, zenkai: {}, ll: {}, extNonBase: {} };
+    const e = ext || { z: {}, zenkai: {}, ll: {}, extNonBase: {}, damage: {} };
     const extBase = (e.z[s] || 0) + (e.zenkai[s] || 0) + (e.ll[s] || 0);
-    const extNonBase = e.extNonBase ? (e.extNonBase[s] || 0) : 0;
+    // 与ダメージ（§37）は最終火力への乗算なので、採点上は基礎なし補正とまったく同じ扱いでよい。
+    // ここで合算しておくと探索ループ・分枝限定の上界計算に手を入れずに済む。
+    // 表示（characterDetail）側は ext.damage を分離したまま使うので ❸ は実機と一致する
+    const extNonBase = (e.extNonBase ? (e.extNonBase[s] || 0) : 0) + (e.damage ? (e.damage[s] || 0) : 0);
     const final0 = finalStat({ base: sb.base, boost: sb.boost, corr: extBase, nonBase: extNonBase });
     stats.push({
       stat: s, weight: weights[s],
@@ -909,12 +916,17 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
   const conditionalOff = [];
   const basePct = Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
   const nonBasePct = Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
+  // 与ダメージ（§37）は最終火力への乗算で、ゲームのステータス画面には出ない。
+  // 表示用の ❸ は実機と一致させたいので、ここで分離して damagePct として別に返す。
+  // （最適化スコアの側では基礎なしと同じ乗算項として効かせている）
+  const damagePct = Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
   for (const frag of fragmentList) {
     const r = fragmentStatEffects(frag, effectMap, { stars, context });
     unknown.push(...r.unknown);
     conditionalOff.push(...r.conditionalOff.map((c) => ({ ...c, fragmentName: frag.name })));
     for (const ef of r.effects) {
-      if (ef.base) basePct[ef.stat] += ef.value;
+      if (ef.damage) damagePct[ef.stat] += ef.value;
+      else if (ef.base) basePct[ef.stat] += ef.value;
       else nonBasePct[ef.stat] += ef.value;
     }
   }
@@ -922,6 +934,8 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
   for (const s of ALL_STATS) {
     const sb = statBase(member.character, member.my, s);
     if (!sb || sb.base <= 0) continue;
+    const abilityDmg = e.damage ? (e.damage[s] || 0) : 0;
+    damagePct[s] += abilityDmg;
     stats[s] = computeStat({
       total: sb.total, boost: sb.boost,
       z: (e.z[s] || 0) + (e.zenkai[s] || 0),
@@ -931,6 +945,9 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
       fragNonBase: nonBasePct[s],
       extNonBase: e.extNonBase ? (e.extNonBase[s] || 0) : 0,
     });
+    // 与ダメージ込みの実効火力（❸ × (1+与ダメージ%)）。表示で「火力」として別に出す
+    stats[s].damagePct = damagePct[s];
+    stats[s].effective = stats[s].final * (damagePct[s] * 0.01 + 1);
   }
-  return { stats, unknown, conditionalOff };
+  return { stats, unknown, conditionalOff, damagePct };
 }

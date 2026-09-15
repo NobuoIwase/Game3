@@ -205,7 +205,12 @@
    "base": false
   },
   "与ダメージ": {
-   "other": true
+   "stats": [
+    "strike_atk",
+    "blast_atk"
+   ],
+   "base": false,
+   "damage": true
   },
   "被ダメージ": {
    "other": true
@@ -237,16 +242,32 @@
    "other": true
   },
   "打撃与ダメージ": {
-   "other": true
+   "stats": [
+    "strike_atk"
+   ],
+   "base": false,
+   "damage": true
   },
   "射撃与ダメージ": {
-   "other": true
+   "stats": [
+    "blast_atk"
+   ],
+   "base": false,
+   "damage": true
   },
   "打撃アーツ与ダメージ": {
-   "other": true
+   "stats": [
+    "strike_atk"
+   ],
+   "base": false,
+   "damage": true
   },
   "射撃アーツ与ダメージ": {
-   "other": true
+   "stats": [
+    "blast_atk"
+   ],
+   "base": false,
+   "damage": true
   },
   "さらに、味方の自爆による与ダメージ": {
    "other": true
@@ -280,6 +301,14 @@
   },
   "被ダメージカット": {
    "other": true
+  },
+  "自身の与ダメージ": {
+   "stats": [
+    "strike_atk",
+    "blast_atk"
+   ],
+   "base": false,
+   "damage": true
   }
  }
 }

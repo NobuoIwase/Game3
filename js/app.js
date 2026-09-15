@@ -738,6 +738,13 @@ function renderParty() {
               ' ',
               el('span', { class: 'up' }, `フラグ換算 +${fmt(st.fragTotal, 1)}% / 補正 +${fmt(st.corr5, 0)}%`))
           : el('div', { class: 'm-stats' }, el('span', { class: 'small-note' }, 'ステータス未取得')),
+        // 与ダメージ（§37）。ゲームのステータス画面には出ないので ❸ とは分けて出す
+        st && st.damagePct > 0
+          ? el('div', { class: 'effline' },
+              el('span', { class: 'up' },
+                `火力 ${fmt0(st.effective)}（与ダメージ +${fmt(st.damagePct, 0)}%）`),
+              el('span', { class: 'small-note' }, ' ※ステータス表示には含まれません'))
+          : null,
         d?.conditionalOff?.length
           ? el('div', { class: 'effline' },
               el('span', { class: 'unknown', title: d.conditionalOff.map((c) => `${c.fragmentName}: ${c.cond_raw}${c.text}+${c.value}%`).join('\n') },

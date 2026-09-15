@@ -36,9 +36,24 @@ test('§2-1 規則パース: entries に無くても「基礎」接頭辞で加�
 });
 
 test('計算対象外と確認済みの効果（other）は警告なしで除外される', () => {
-  assert.deepEqual(lookupEffectName('与ダメージ', effectMap), { other: true });
+  // 必殺・究極与ダメージは「そのアーツを撃つ時だけ」でアーツ種別も一意に決まらないため
+  // 計算対象外のまま（§37）
+  assert.deepEqual(lookupEffectName('必殺与ダメージ', effectMap), { other: true });
   const r = resolveEffect({ text: 'ダメージガード', value: 250 }, effectMap);
   assert.deepEqual(r, { ok: true, effects: [], other: true });
+});
+
+test('§37 与ダメージは火力への乗算として damage 付きで解決される', () => {
+  assert.deepEqual(lookupEffectName('打撃アーツ与ダメージ', effectMap),
+    { stats: ['strike_atk'], base: false, damage: true });
+  assert.deepEqual(lookupEffectName('射撃与ダメージ', effectMap),
+    { stats: ['blast_atk'], base: false, damage: true });
+  assert.deepEqual(lookupEffectName('与ダメージ', effectMap),
+    { stats: ['strike_atk', 'blast_atk'], base: false, damage: true });
+  const r = resolveEffect({ text: '打撃アーツ与ダメージ', value: 3 }, effectMap);
+  assert.deepEqual(r, { ok: true, other: false, effects: [{ stat: 'strike_atk', base: false, value: 3, damage: true }] });
+  // 基礎あり補正には damage が付かない（形を汚さない）
+  assert.deepEqual(lookupEffectName('基礎打撃攻撃力', effectMap), { stats: ['strike_atk'], base: true });
 });
 
 test('未知の効果文言は未対応として返る（黙って0にしない — §1-4）', () => {
@@ -66,7 +81,7 @@ test('fragmentStatEffects v2: SLOT構造・star7条件・raw行の扱い', () =>
         { text: '基礎打撃・射撃攻撃力', value: 60 },
       ] },
       { label: 'SLOT 2', star7: false, lines: [
-        { text: '与ダメージ', value: 220 },
+        { text: '必殺与ダメージ', value: 220 },
         { raw: '場に出た時、以下の効果を発動する' },
       ] },
       { label: 'SLOT 4', star7: true, lines: [{ text: '基礎打撃攻撃力', value: 10 }] },
@@ -74,7 +89,7 @@ test('fragmentStatEffects v2: SLOT構造・star7条件・raw行の扱い', () =>
   };
   const r7 = fragmentStatEffects(frag, effectMap, { stars: 7 });
   assert.equal(r7.unknown.length, 0);
-  assert.deepEqual(r7.others, ['与ダメージ']);
+  assert.deepEqual(r7.others, ['必殺与ダメージ']);
   const strike7 = r7.effects.filter((e) => e.stat === 'strike_atk').reduce((a, e) => a + e.value, 0);
   assert.equal(strike7, 70, '★7ならSLOT4も有効 (60+10)');
   const r3 = fragmentStatEffects(frag, effectMap, { stars: 3 });

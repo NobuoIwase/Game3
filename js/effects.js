@@ -10,7 +10,10 @@
 //   { "stat": "strike_atk", "base": true }            … 単一ステータス
 //   { "stats": ["strike_atk","blast_atk"], "base": true } … 複合表記（打撃・射撃 等）
 //   { "other": true }                                  … ステータス計算対象外と確認済みの効果
-//                                                        （与ダメージ等。警告は出さないが計算にも入れない）
+//                                                        （必殺与ダメージ等。警告は出さないが計算にも入れない）
+//   { "stats": [...], "base": false, "damage": true }  … 与ダメージ（§37）。最終火力への乗算。
+//        スコアでは基礎なし補正と同じ乗算項として効かせるが、ゲームのステータス画面には
+//        出ない値なので、表示用の ❸ には含めない（characterDetail が damagePct で分離する）
 
 import { STATS, ALL_STATS } from './calc.js';
 
@@ -44,7 +47,9 @@ export function lookupEffectName(text, effectMap) {
     if (hit.other === true) return { other: true };
     const stats = hit.stats || (hit.stat ? [hit.stat] : []);
     if (stats.length > 0 && stats.every((s) => ALL_STATS.includes(s))) {
-      return { stats, base: hit.base === true };
+      return hit.damage === true
+        ? { stats, base: hit.base === true, damage: true }
+        : { stats, base: hit.base === true };
     }
     return null; // entries の記述が壊れている → 未対応扱い
   }
@@ -121,7 +126,13 @@ export function resolveEffect(entry, effectMap) {
     const hit = lookupEffectName(entry.text, effectMap);
     if (hit && hit.other) return { ok: true, effects: [], other: true };
     if (hit) {
-      return { ok: true, effects: hit.stats.map((stat) => ({ stat, base: hit.base, value })), other: false };
+      return {
+        ok: true,
+        effects: hit.stats.map((stat) => (hit.damage
+          ? { stat, base: hit.base, value, damage: true }
+          : { stat, base: hit.base, value })),
+        other: false,
+      };
     }
     return { ok: false, reason: `未対応の効果文言「${entry.text}」`, raw: entry };
   }

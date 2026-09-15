@@ -780,3 +780,53 @@ test('§36-6 1枠あたり互角でも、候補数が多いメンバーに合計
   assert.ok(bal.includes('20') && bal.includes('21'),
     'バランスは候補が少ないメンバー向けの候補を拾う');
 });
+
+// §37: 与ダメージは「最終火力への乗算」。スコアでは基礎なしと同じ乗算項として効かせるが、
+// ゲームのステータス画面には出ない値なので、表示用の ❸ には含めない。
+test('§37 与ダメージは ❸ に混ざらず、実効火力として別に出る', async () => {
+  const { characterDetail, abilityCorrections } = await import('../js/optimizer.js');
+  const member = { character: charaV2(1, [7], { blast_atk: 80_000 }), my: myOf() };
+  const base = characterDetail({ member, ext: null, fragmentList: [], effectMap, context: null });
+  const frag = {
+    id: 900, name: '与ダメテスト', slots: [{ label: 'SLOT 1', star7: false, lines: [
+      { text: '打撃アーツ与ダメージ', value: 50 },
+    ] }],
+  };
+  const withDmg = characterDetail({ member, ext: null, fragmentList: [frag], effectMap, context: null });
+  assert.equal(withDmg.stats.strike_atk.final, base.stats.strike_atk.final,
+    '与ダメージは表示❸を変えない（実機のステータス画面と一致させる）');
+  assert.equal(withDmg.stats.strike_atk.damagePct, 50);
+  assert.ok(Math.abs(withDmg.stats.strike_atk.effective - base.stats.strike_atk.final * 1.5) < 1e-6,
+    '実効火力 = ❸ × (1 + 与ダメージ%)');
+  assert.equal(withDmg.stats.blast_atk.damagePct, 0, '打撃指定の与ダメージは射撃に乗らない');
+});
+
+test('§37 アビリティ由来の与ダメージは damage バケツに入り extNonBase を汚さない', async () => {
+  const { abilityCorrections } = await import('../js/optimizer.js');
+  const zAb = (tag, text, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text, value }], unresolved: [], raw: '' }] }];
+  const members = [
+    { character: charaV2(1, [7], {}, { z_ability: zAb(7, '打撃アーツ与ダメージ', 3) }), my: myOf() },
+    { character: charaV2(2, [8]), my: myOf() },
+  ];
+  const ext = abilityCorrections(members, [1, 2], effectMap, { leaderId: null });
+  assert.equal(ext['1'].damage.strike_atk, 3, '条件一致するキャラには乗る');
+  assert.equal(ext['1'].extNonBase.strike_atk, 0, '表示用の基礎なしバケツは汚さない');
+  assert.equal(ext['2'].damage.strike_atk, 0, '条件が合わないキャラには乗らない');
+  assert.equal(ext['1'].warnings.length, 0, '与ダメージは「未検証の基礎なし」警告を出さない');
+});
+
+test('§37 与ダメージは最適化スコアに効く（基礎なしと同じ乗算項）', async () => {
+  const { bestForCharacter } = await import('../js/optimizer.js');
+  const member = { character: charaV2(1, [7]), my: myOf() };
+  const mkFrag = (id, name, lines) => ({ id, name, slots: [{ label: 'SLOT 1', star7: false, lines }] });
+  const fragmentsById = {
+    901: mkFrag(901, '与ダメ大', [{ text: '打撃アーツ与ダメージ', value: 100 }]),
+    902: mkFrag(902, '基礎小', [{ text: '基礎打撃攻撃力', value: 5 }]),
+  };
+  const counts = { 901: 6, 902: 6 };
+  const r = bestForCharacter({
+    member, ext: null, fragmentsById, counts,
+    weights: { strike_atk: 1 }, effectMap, context: null,
+  });
+  assert.ok(r.ids.map(String).includes('901'), '与ダメージ+100%は基礎+5%より高く評価される');
+});
