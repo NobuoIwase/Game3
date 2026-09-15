@@ -934,3 +934,29 @@ test('§40 theoreticalMax: 与ダメージを除外してステータス値を�
     '与ダメージはステータス画面に出ないので、ステータス最大化では選ばれない');
   assert.ok(top.fragIds.map(String).includes('901'));
 });
+
+// §42: 自動選出は「候補プール」の中でしか最適化できない。
+// 強い候補がプール外にあると、黙って劣る3体が選ばれる（実際に起きた）。
+test('§42 候補プールから外れた強いキャラは選ばれない（採点自体は正しい）', async () => {
+  const { pickZenkaiMembers, scoreZenkaiCandidates } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const battleMembers = [
+    { character: charaV2(1, [7]), my: myOf() },
+    { character: charaV2(2, [7]), my: myOf() },
+  ];
+  const strong = { character: charaV2(99, [88], {}, { z_ability: zAb(7, 90) }), my: myOf() };
+  const weak = [10, 11, 12].map((id) => ({ character: charaV2(id, [88], {}, { z_ability: zAb(7, 20) }), my: myOf() }));
+  const p = { battleMembers, weights: { strike_atk: 1 }, weightsById: {}, effectMap, leaderId: null };
+
+  // プールに入っていれば当然1位
+  const withStrong = scoreZenkaiCandidates({ ...p, candidates: [...weak, strong] });
+  assert.equal(String(withStrong[0].id), '99', 'プール内なら最強が1位');
+
+  // プールから外すと、劣る3体がそのまま選ばれる（バグではなく入力の問題）
+  const picked = pickZenkaiMembers({ ...p, candidates: weak }).map((x) => String(x.id));
+  assert.deepEqual(picked.sort(), ['10', '11', '12'], 'プール外の強候補は選びようがない');
+  // 「プール外に強い候補がいる」ことは、外側を採点し直せば検出できる
+  const outside = scoreZenkaiCandidates({ ...p, candidates: [strong] });
+  const worstPicked = Math.min(...pickZenkaiMembers({ ...p, candidates: weak }).map((x) => x.delta));
+  assert.ok(outside[0].delta > worstPicked, 'プール外の方が強いことを検出できる');
+});

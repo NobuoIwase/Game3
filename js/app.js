@@ -1205,10 +1205,10 @@ function computeZenkaiSuggestions() {
 
   // 候補は最適化の自動選出と同じ範囲（全キャラ所持が標準／オフなら登録済みのみ）
   const cands = [];
-  const pool = (state.my.own_all !== false
-    ? Object.values(state.game.characters)
-    : Object.keys(state.my.characters || {}).map((cid) => charDef(cid)).filter(Boolean))
-    .filter((d) => isOwned(String(d.id)));
+  const inPool = (d) => (state.my.own_all !== false
+    ? true
+    : !!charMy(String(d.id))) && isOwned(String(d.id));
+  const pool = Object.values(state.game.characters).filter(inPool);
   for (const def of pool) {
     const cid = String(def.id);
     if (partyIds.has(cid)) continue;
@@ -1231,6 +1231,22 @@ function computeZenkaiSuggestions() {
     leaderId: ui.party.memberIds[0] || null,
   });
   const benefitOf = new Map(scored.map((x) => [String(x.id), x.delta]));
+
+  // 「候補に入っていないが、入れれば上位に来る」キャラ（§42）。
+  // 所持登録していないと自動選出の候補にならないため、強いZENKAI覚醒キャラを
+  // 持っていても黙って無視される。それを見えるようにする
+  const bestIn = scored.length ? scored[0].delta : 0;
+  const outside = Object.values(state.game.characters)
+    .filter((d) => d && d.id != null && !inPool(d) && !partyIds.has(String(d.id)));
+  const outsideScored = outside.length
+    ? scoreZenkaiCandidates({
+        battleMembers,
+        candidates: outside.map((d) => ({ character: d, my: charMy(d.id) || defaultCharMy(d) })),
+        weights, weightsById: wById,
+        effectMap: state.game.effectMap,
+        leaderId: ui.party.memberIds[0] || null,
+      }).filter((x) => x.delta > (scored[2]?.delta ?? 0)).slice(0, 5)
+    : [];
 
   // 体力恩恵（④の並び替え用）: バトル3体に実際に乗る基礎体力%の合計
   const hpPctOf = (def, my) => {
@@ -1265,6 +1281,7 @@ function computeZenkaiSuggestions() {
   const abilityTop = top3([...rows].sort((a, b) => b.benefit - a.benefit || b.rare - a.rare));
   const bestTotal = abilityTop.reduce((t, c) => t + c.benefit, 0);
   return {
+    outside: outsideScored,
     hasArts, atkFocus, bestTotal,
     ability: abilityTop,
     rare: top3(rows.filter((c) => c.rare > 0).sort((a, b) => b.rare - a.rare || b.benefit - a.benefit)),
@@ -1326,7 +1343,29 @@ function renderZenkaiSuggestCard() {
         row('① アビリティ恩恵 重視（最適化の自動選出と同じ）', s.ability, (c) => `+${fmt(c.benefit, 0)}`),
         row('② 必殺・特殊アーツ持ち', s.rare, (c) => `レア${c.rare}枚`),
         s.atkFocus ? row(`③ ${s.atkFocus}アーツで特化を伸ばす`, s.focus, (c) => `${s.atkFocus}${c.focus}枚`) : null,
-        row('④ 体力アップの貴重な恩恵', s.hp, (c) => `HP+${fmt(c.hpBenefit, 0)}%`)));
+        row('④ 体力アップの貴重な恩恵', s.hp, (c) => `HP+${fmt(c.hpBenefit, 0)}%`),
+        // 候補に入っていないが入れれば上位に来るキャラ（§42）
+        s.outside?.length ? el('div', {},
+          el('div', { class: 'item-title', style: 'margin-top:10px' }, '⚠ 候補外だが、入れれば上位に来るキャラ'),
+          el('p', { class: 'small-note' },
+            '所持登録していないため自動選出の候補に入っていません。'
+            + '実際に持っているなら下のボタンで登録すると、次の最適化から選ばれるようになります'
+            + '（データタブの「全キャラ所持」をONにしても候補に入ります）。'),
+          s.outside.map((x) => {
+            const d = charDef(x.id);
+            return el('div', { class: 'effline' },
+              el('span', { class: 'unknown' }, `+${fmt(x.delta, 0)}`),
+              el('span', {}, ` ${d?.name || x.id}（${d?.card_no || ''}${d?.element ? ',' + d.element : ''}）`),
+              el('button', {
+                class: 'btn secondary small', style: 'margin-left:6px',
+                onclick: async () => {
+                  ensureCharMy(String(x.id));
+                  await persistMy();
+                  renderParty(); renderChars();
+                  showMsg('ok', `${d?.name || x.id} を所持登録しました。次の最適化から候補に入ります。`);
+                },
+              }, '所持登録する'));
+          })) : null));
     },
   },
     el('summary', {}, 'ゼンカイ枠の提案を表示（アビリティ恩恵×アーツ構成）'),
@@ -1542,11 +1581,24 @@ async function runOptimize() {
       ui.party.memberIds[3 + i] = zIds[i] || '';
       if (zIds[i]) ensureCharMy(zIds[i]); // 星などを編集できるよう登録しておく
     }
+    // 「なぜこのキャラが選ばれたのか」より先に「そもそも何体から選んだのか」が要る（§42）。
+    // 所持登録していないキャラは候補に入らないため、強い候補が黙って除外されうる
+    const poolN = zenkaiCandidates.length;
+    const allN = Object.keys(state.game.characters).length;
+    const poolNote = state.my.own_all === false
+      ? `（所持登録済みの ${poolN} 体から選出。未登録のキャラは候補に入りません）`
+      : `（所持 ${poolN} 体から選出）`;
     if (zIds.length) {
-      zenkaiMsg = `\nゼンカイ枠を自動選出しました: ${zIds.map((id) => charDef(id)?.name || id).join(' / ')}` +
+      zenkaiMsg = `\nゼンカイ枠を自動選出しました${poolNote}: ${zIds.map((id) => charDef(id)?.name || id).join(' / ')}` +
         (zIds.length < 3 ? `（バトル3体に恩恵のある候補が ${zIds.length} 体でした）` : '');
+      // 候補が全体の2割未満なら、取りこぼしの可能性が高いので明示的に知らせる
+      if (state.my.own_all === false && poolN < allN * 0.2) {
+        zenkaiMsg += `\n※候補が ${poolN}/${allN} 体しかありません。強いZENKAI覚醒キャラを持っていても、`
+          + '所持登録していないと選ばれません。データタブで「全キャラ所持」をONにするか、'
+          + 'キャラタブでそのキャラを開いて登録してください。';
+      }
     } else {
-      zenkaiMsg = '\nゼンカイ枠: バトル3体にアビリティ恩恵のある候補が見つかりませんでした。';
+      zenkaiMsg = `\nゼンカイ枠: バトル3体にアビリティ恩恵のある候補が見つかりませんでした${poolNote}。`;
     }
   }
 
