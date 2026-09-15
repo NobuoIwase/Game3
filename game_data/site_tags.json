@@ -1,0 +1,710 @@
+{
+ "_comment": [
+  "サイト内タグ（DESIGN.md §33）。参照サイトのタグとは別に、アビリティ本文から",
+  "「トリガー × 効果」で機械的に分類する独自タグ。ここに1行足すだけで分類が増える（原則1-3）。",
+  "2025年の孫悟空：少年期(DBL82-03S)以降は ▼トリガー / ○効果 の箇条書き形式、",
+  "それ以前は「〜時、…する」の文章形式。patterns は両方に当たるよう書くこと。",
+  "アーツの距離は公式データに無いため、本文の「突進」の有無で近距離/遠距離を推定している（目安）。"
+ ],
+ "categories": [
+  {
+   "id": "on_hit",
+   "label": "被弾時"
+  },
+  {
+   "id": "swap",
+   "label": "登場・交代・退場"
+  },
+  {
+   "id": "combat",
+   "label": "戦闘中の挙動"
+  },
+  {
+   "id": "debuff",
+   "label": "敵へのデバフ"
+  },
+  {
+   "id": "sustain",
+   "label": "回復・継戦"
+  },
+  {
+   "id": "hand",
+   "label": "手札・カード操作"
+  },
+  {
+   "id": "guard",
+   "label": "防御・無効化"
+  },
+  {
+   "id": "gauge",
+   "label": "ゲージ・交代支援"
+  },
+  {
+   "id": "arts",
+   "label": "アーツ構成"
+  },
+  {
+   "id": "kit",
+   "label": "所持ギミック"
+  }
+ ],
+ "triggers": {
+  "hit": {
+   "label": "被弾時",
+   "patterns": [
+    "敵のアーツ攻撃を受けた時",
+    "アーツ攻撃を受けた時",
+    "攻撃を受けた時",
+    "被弾時",
+    "ダメージを受けた時"
+   ]
+  },
+  "enter": {
+   "label": "場に出た時",
+   "patterns": [
+    "場に出た時",
+    "タッグチェンジ時",
+    "登場時"
+   ]
+  },
+  "leave": {
+   "label": "控えに戻る時",
+   "patterns": [
+    "控えに戻る時",
+    "交代時"
+   ]
+  },
+  "face": {
+   "label": "敵と対峙した時",
+   "patterns": [
+    "敵と対峙した時",
+    "バトル開始時"
+   ]
+  },
+  "card_use": {
+   "label": "カード使用・ヒット時",
+   "patterns": [
+    "カード使用時",
+    "アーツヒット時",
+    "ヒット時",
+    "カードドロー時"
+   ]
+  },
+  "cover": {
+   "label": "カバーチェンジ時",
+   "patterns": [
+    "カバーチェンジ時"
+   ]
+  },
+  "vanish": {
+   "label": "バニシングステップ時",
+   "patterns": [
+    "バニシングステップ時"
+   ]
+  },
+  "enemy_big": {
+   "label": "敵の必殺・究極発動時",
+   "patterns": [
+    "敵が必殺・究極・覚醒アーツ",
+    "敵が究極・覚醒アーツ",
+    "ライジングラッシュ発動時"
+   ]
+  },
+  "gauge_max": {
+   "label": "ゲージ最大時",
+   "patterns": [
+    "最大値になった時",
+    "最大値の間",
+    "ユニークゲージのLv"
+   ]
+  },
+  "leader": {
+   "label": "リーダー時",
+   "patterns": [
+    "リーダーの場合"
+   ]
+  },
+  "downed": {
+   "label": "戦闘不能・瀕死時",
+   "patterns": [
+    "戦闘不能",
+    "踏ん張り発動時"
+   ]
+  }
+ },
+ "effects": {
+  "discard": {
+   "label": "敵の手札破棄",
+   "patterns": [
+    "敵[^\\r\\n]{0,8}手札(?:を)?[0-9]*枚?破棄",
+    "手札(?:を)?[0-9]*枚?破棄"
+   ]
+  },
+  "ki_drain": {
+   "label": "敵の気力減少",
+   "patterns": [
+    "敵[^\\r\\n]{0,8}気力(?:を)?[0-9]*減少"
+   ]
+  },
+  "cost_up": {
+   "label": "敵にアーツコストアップ",
+   "patterns": [
+    "アーツコスト(?:を)?[0-9]*\\{\\{ICN:UpRed\\}\\}",
+    "アーツコスト(?:を)?[0-9]*アップ"
+   ]
+  },
+  "wait_add": {
+   "label": "敵に待機カウント付与",
+   "patterns": [
+    "敵[^\\r\\n]{0,8}待機カウント(?:を)?[0-9]*付与"
+   ]
+  },
+  "seal": {
+   "label": "敵に封印付与",
+   "patterns": [
+    "封印"
+   ]
+  },
+  "buff_erase": {
+   "label": "敵の強化を消去",
+   "patterns": [
+    "敵の状態強化を消去",
+    "敵の能力上昇を消去"
+   ]
+  },
+  "change_ban": {
+   "label": "敵の交代を妨害",
+   "patterns": [
+    "交代禁止",
+    "特殊カバーチェンジ禁止"
+   ]
+  },
+  "heal": {
+   "label": "体力回復",
+   "patterns": [
+    "体力(?:を)?[0-9.]*[%％]?\\s*(?:~|〜|～)?\\s*[0-9.]*[%％]?回復"
+   ]
+  },
+  "ki_heal": {
+   "label": "気力回復",
+   "patterns": [
+    "気力(?:を)?[0-9]*回復"
+   ]
+  },
+  "endure": {
+   "label": "踏ん張り",
+   "patterns": [
+    "踏ん張り"
+   ]
+  },
+  "draw": {
+   "label": "カードドロー",
+   "patterns": [
+    "カード(?:を)?[0-9]*枚?ドロー",
+    "ドロー速度"
+   ]
+  },
+  "cleanse": {
+   "label": "能力低下・状態異常を消去",
+   "patterns": [
+    "能力低下",
+    "状態異常"
+   ]
+  },
+  "dmg_up": {
+   "label": "与ダメージアップ",
+   "patterns": [
+    "与ダメージ(?:を)?[0-9.]*[%％]"
+   ]
+  },
+  "dmg_guard": {
+   "label": "ダメージガード",
+   "patterns": [
+    "ダメージガード"
+   ]
+  },
+  "elem_immune": {
+   "label": "属性相性不利を無効",
+   "patterns": [
+    "属性相性不利を無効"
+   ]
+  },
+  "cover_block": {
+   "label": "特殊カバーチェンジ無効",
+   "patterns": [
+    "特殊カバーチェンジ無効"
+   ]
+  },
+  "wait_cut": {
+   "label": "味方の待機カウント短縮",
+   "patterns": [
+    "待機カウント(?:を)?[0-9]*短縮"
+   ]
+  },
+  "db_up": {
+   "label": "ドラゴンボール増加",
+   "patterns": [
+    "ドラゴンボール(?:を)?[0-9]*つ?増加"
+   ]
+  },
+  "gauge_up": {
+   "label": "ゲージ増加",
+   "patterns": [
+    "ユニークゲージ(?:を)?[0-9.]*[%％]増加",
+    "チェンジゲージ(?:を)?[0-9.]*[%％]増加"
+   ]
+  },
+  "ki_speed": {
+   "label": "気力回復速度アップ",
+   "patterns": [
+    "気力回復速度(?:を)?[0-9.]*[%％]"
+   ]
+  }
+ },
+ "_debuff_effects": [
+  "discard",
+  "ki_drain",
+  "cost_up",
+  "wait_add",
+  "seal",
+  "buff_erase",
+  "change_ban"
+ ],
+ "tags": [
+  {
+   "id": "hit_discard",
+   "label": "被弾時に敵の手札破棄",
+   "category": "on_hit",
+   "effect_any": [
+    "discard"
+   ],
+   "trigger": "hit"
+  },
+  {
+   "id": "hit_ki_drain",
+   "label": "被弾時に敵の気力減少",
+   "category": "on_hit",
+   "effect_any": [
+    "ki_drain"
+   ],
+   "trigger": "hit"
+  },
+  {
+   "id": "hit_cost_up",
+   "label": "被弾時に敵へアーツコストアップ",
+   "category": "on_hit",
+   "effect_any": [
+    "cost_up"
+   ],
+   "trigger": "hit"
+  },
+  {
+   "id": "hit_debuff",
+   "label": "被弾時に敵へデバフ（総合）",
+   "category": "on_hit",
+   "effect_any": [
+    "discard",
+    "ki_drain",
+    "cost_up",
+    "wait_add",
+    "seal",
+    "buff_erase",
+    "change_ban"
+   ],
+   "trigger": "hit"
+  },
+  {
+   "id": "hit_debuff_stack",
+   "label": "被弾回数に応じて敵へデバフ",
+   "category": "on_hit",
+   "effect_any": [
+    "discard",
+    "ki_drain",
+    "cost_up",
+    "wait_add",
+    "seal",
+    "buff_erase",
+    "change_ban"
+   ],
+   "trigger": "hit",
+   "repeat": true
+  },
+  {
+   "id": "hit_heal",
+   "label": "被弾時に回復",
+   "category": "on_hit",
+   "effect_any": [
+    "heal",
+    "ki_heal"
+   ],
+   "trigger": "hit"
+  },
+  {
+   "id": "hit_draw",
+   "label": "被弾時にカードドロー",
+   "category": "on_hit",
+   "effect_any": [
+    "draw"
+   ],
+   "trigger": "hit"
+  },
+  {
+   "id": "enter_debuff",
+   "label": "場に出た時に敵へデバフ",
+   "category": "swap",
+   "effect_any": [
+    "discard",
+    "ki_drain",
+    "cost_up",
+    "wait_add",
+    "seal",
+    "buff_erase",
+    "change_ban"
+   ],
+   "trigger": "enter"
+  },
+  {
+   "id": "enter_heal",
+   "label": "場に出た時に回復",
+   "category": "swap",
+   "effect_any": [
+    "heal",
+    "ki_heal"
+   ],
+   "trigger": "enter"
+  },
+  {
+   "id": "enter_draw",
+   "label": "場に出た時にカードドロー",
+   "category": "swap",
+   "effect_any": [
+    "draw"
+   ],
+   "trigger": "enter"
+  },
+  {
+   "id": "leave_debuff",
+   "label": "控えに戻る時に敵へデバフ",
+   "category": "swap",
+   "effect_any": [
+    "discard",
+    "ki_drain",
+    "cost_up",
+    "wait_add",
+    "seal",
+    "buff_erase",
+    "change_ban"
+   ],
+   "trigger": "leave"
+  },
+  {
+   "id": "leave_debuff_stack",
+   "label": "控えに戻る時、被弾回数に応じて敵へデバフ",
+   "category": "swap",
+   "effect_any": [
+    "discard",
+    "ki_drain",
+    "cost_up",
+    "wait_add",
+    "seal",
+    "buff_erase",
+    "change_ban"
+   ],
+   "trigger": "leave",
+   "repeat": true
+  },
+  {
+   "id": "face_debuff",
+   "label": "対峙・開始時に敵へデバフ",
+   "category": "swap",
+   "effect_any": [
+    "discard",
+    "ki_drain",
+    "cost_up",
+    "wait_add",
+    "seal",
+    "buff_erase",
+    "change_ban"
+   ],
+   "trigger": "face"
+  },
+  {
+   "id": "cover_bonus",
+   "label": "カバーチェンジ時に効果",
+   "category": "swap",
+   "effect_any": [
+    "heal",
+    "ki_heal",
+    "draw",
+    "dmg_up",
+    "wait_cut"
+   ],
+   "trigger": "cover"
+  },
+  {
+   "id": "vanish_bonus",
+   "label": "バニシングステップ時に効果",
+   "category": "combat",
+   "effect_any": [
+    "heal",
+    "ki_heal",
+    "draw",
+    "dmg_up",
+    "cleanse"
+   ],
+   "trigger": "vanish"
+  },
+  {
+   "id": "card_use_bonus",
+   "label": "カード使用・ヒット時に効果",
+   "category": "combat",
+   "effect_any": [
+    "draw",
+    "ki_heal",
+    "heal",
+    "dmg_up",
+    "wait_cut"
+   ],
+   "trigger": "card_use"
+  },
+  {
+   "id": "counter_big",
+   "label": "敵の必殺・究極に対応",
+   "category": "combat",
+   "effect_any": [
+    "dmg_guard",
+    "elem_immune",
+    "heal",
+    "ki_heal",
+    "cleanse",
+    "endure"
+   ],
+   "trigger": "enemy_big"
+  },
+  {
+   "id": "downed_effect",
+   "label": "戦闘不能・踏ん張り関連",
+   "category": "combat",
+   "effect_any": [
+    "endure",
+    "heal",
+    "dmg_up"
+   ],
+   "trigger": "downed"
+  },
+  {
+   "id": "any_discard",
+   "label": "敵の手札破棄を持つ",
+   "category": "debuff",
+   "effect_any": [
+    "discard"
+   ]
+  },
+  {
+   "id": "any_ki_drain",
+   "label": "敵の気力減少を持つ",
+   "category": "debuff",
+   "effect_any": [
+    "ki_drain"
+   ]
+  },
+  {
+   "id": "any_cost_up",
+   "label": "敵へアーツコストアップを持つ",
+   "category": "debuff",
+   "effect_any": [
+    "cost_up"
+   ]
+  },
+  {
+   "id": "any_seal",
+   "label": "敵へ封印を持つ",
+   "category": "debuff",
+   "effect_any": [
+    "seal"
+   ]
+  },
+  {
+   "id": "any_buff_erase",
+   "label": "敵の強化消去を持つ",
+   "category": "debuff",
+   "effect_any": [
+    "buff_erase"
+   ]
+  },
+  {
+   "id": "any_change_ban",
+   "label": "敵の交代妨害を持つ",
+   "category": "debuff",
+   "effect_any": [
+    "change_ban"
+   ]
+  },
+  {
+   "id": "any_heal",
+   "label": "体力回復を持つ",
+   "category": "sustain",
+   "effect_any": [
+    "heal"
+   ]
+  },
+  {
+   "id": "any_endure",
+   "label": "踏ん張りを持つ",
+   "category": "sustain",
+   "effect_any": [
+    "endure"
+   ]
+  },
+  {
+   "id": "any_cleanse",
+   "label": "能力低下・状態異常の消去を持つ",
+   "category": "sustain",
+   "effect_any": [
+    "cleanse"
+   ]
+  },
+  {
+   "id": "any_draw",
+   "label": "カードドローを持つ",
+   "category": "hand",
+   "effect_any": [
+    "draw"
+   ]
+  },
+  {
+   "id": "any_guard",
+   "label": "ダメージガードを持つ",
+   "category": "guard",
+   "effect_any": [
+    "dmg_guard"
+   ]
+  },
+  {
+   "id": "any_elem_immune",
+   "label": "属性相性不利の無効を持つ",
+   "category": "guard",
+   "effect_any": [
+    "elem_immune"
+   ]
+  },
+  {
+   "id": "any_cover_block",
+   "label": "特殊カバーチェンジ無効を持つ",
+   "category": "guard",
+   "effect_any": [
+    "cover_block"
+   ]
+  },
+  {
+   "id": "any_wait_cut",
+   "label": "味方の待機カウント短縮を持つ",
+   "category": "gauge",
+   "effect_any": [
+    "wait_cut"
+   ]
+  },
+  {
+   "id": "any_gauge_up",
+   "label": "ゲージ増加を持つ",
+   "category": "gauge",
+   "effect_any": [
+    "gauge_up"
+   ]
+  },
+  {
+   "id": "any_db_up",
+   "label": "ドラゴンボール増加を持つ",
+   "category": "gauge",
+   "effect_any": [
+    "db_up"
+   ]
+  },
+  {
+   "id": "any_ki_speed",
+   "label": "気力回復速度アップを持つ",
+   "category": "sustain",
+   "effect_any": [
+    "ki_speed"
+   ]
+  },
+  {
+   "id": "arts_ultimate",
+   "label": "必殺アーツ持ち",
+   "category": "arts",
+   "arts_type": "必殺"
+  },
+  {
+   "id": "arts_special",
+   "label": "特殊アーツ持ち",
+   "category": "arts",
+   "arts_type": "特殊"
+  },
+  {
+   "id": "ult_melee",
+   "label": "近距離系必殺（突進）",
+   "category": "arts",
+   "arts_type": "必殺",
+   "arts_with": "突進"
+  },
+  {
+   "id": "ult_ranged",
+   "label": "遠距離系必殺（その場）",
+   "category": "arts",
+   "arts_type": "必殺",
+   "arts_without": "突進"
+  },
+  {
+   "id": "sp_melee",
+   "label": "近距離系特殊（突進）",
+   "category": "arts",
+   "arts_type": "特殊",
+   "arts_with": "突進"
+  },
+  {
+   "id": "sp_ranged",
+   "label": "遠距離系特殊（その場）",
+   "category": "arts",
+   "arts_type": "特殊",
+   "arts_without": "突進"
+  },
+  {
+   "id": "armor_strike",
+   "label": "射撃アーマー付き打撃",
+   "category": "arts",
+   "arts_type": "打撃",
+   "arts_with": "射撃アーマー"
+  },
+  {
+   "id": "armor_ultimate",
+   "label": "射撃アーマー付き必殺",
+   "category": "arts",
+   "arts_type": "必殺",
+   "arts_with": "射撃アーマー"
+  },
+  {
+   "id": "has_unique_frag",
+   "label": "専用ユニークフラグメント持ち",
+   "category": "kit",
+   "special": "unique_fragment"
+  },
+  {
+   "id": "has_unique_gauge",
+   "label": "ユニークゲージ持ち",
+   "category": "kit",
+   "special": "unique_gauge"
+  },
+  {
+   "id": "has_zenkai",
+   "label": "ZENKAI覚醒",
+   "category": "kit",
+   "special": "zenkai"
+  },
+  {
+   "id": "has_main_ability",
+   "label": "メインアビリティあり",
+   "category": "kit",
+   "special": "main_ability"
+  }
+ ]
+}

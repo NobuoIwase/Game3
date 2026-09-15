@@ -92,7 +92,7 @@ export async function loadGameData() {
     try { return await fetchJSON(path); }
     catch (e) { errors.push(e.message); return fallback; }
   };
-  const [characters, fragments, effectMap, tags, config, meta, transformTags] = await Promise.all([
+  const [characters, fragments, effectMap, tags, config, meta, transformTags, siteTags] = await Promise.all([
     load('./game_data/characters.json', {}),
     load('./game_data/fragments.json', {}),
     load('./game_data/effect_map.json', { entries: {}, _stat_keywords: {} }),
@@ -100,6 +100,7 @@ export async function loadGameData() {
     load('./game_data/config.json', { known_rarities: [], asset_base: '' }),
     load('./game_data/meta.json', null),
     load('./game_data/transform_tags.json', {}),
+    load('./game_data/site_tags.json', { categories: [], tags: [] }),
   ]);
   const overrides = (await idbGet('game_overrides')) || emptyOverrides();
   const merge = (fileData, over) => {
@@ -121,6 +122,7 @@ export async function loadGameData() {
     ch.tags = (ch.tags || []).filter((t) => !ch.transform_tags.includes(Number(t)));
   }
   return {
+    siteTags,
     characters: mergedCharacters,
     fragments: merge(fragments, overrides.fragments),
     tags: merge(tags, overrides.tags),

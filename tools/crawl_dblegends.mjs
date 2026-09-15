@@ -21,6 +21,7 @@ import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { computeSiteTags, exclusiveUniqueFragments } from '../js/site_tags.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = process.env.DBL_BASE || 'https://jp.dblegends.net';
@@ -300,6 +301,16 @@ export function parseCharacterPage(html, id) {
     };
   });
 
+  // アーツ本体の詳細（script#am）。「▼発動時 ○カードを1枚ドロー」のような
+  // トリガー付きテキストを持ち、キャラの特徴分類（サイト内タグ — §33）の主要な入力になる。
+  // 本文は大きいのでキャッシュにだけ持ち、公開データ（characters.json）には出さない
+  const am = scriptJSON(html, 'am') || {};
+  const arts_detail = Object.entries(am).map(([aid, v]) => ({
+    id: Number(aid),
+    name: String((v || [])[0] || ''),
+    text: String((v || [])[1] || ''),
+  })).filter((a) => a.name || a.text);
+
   const tagNameToId = {};
   for (const [tid, arr] of Object.entries(tr)) tagNameToId[arr[0]] = Number(tid);
 
@@ -331,7 +342,18 @@ export function parseCharacterPage(html, id) {
     z_ability: abilityTexts((d.ab || {}).z),        // ZアビリティI〜IV
     deploy_z_ability: abilityTexts((d.ab || {}).llz), // 出撃ZアビリティI〜IV
     zenkai_ability: abilityTexts((d.ab || {}).p),   // ZENKAI系（無ければ空）
-    // ULTRAアビリティ（レアリティULTRAのみ）。d.ab.u: [[?,?,アビリティID,?],...]
+    // メインアビリティ（d.ab.m）。ステータス式(❸)には乗らない戦闘効果だが、
+    // 「被弾時に敵の手札破棄」等の特徴分類（サイト内タグ — §33）の主要な入力になる
+    main_ability: (() => {
+      const mid = (d.ab || {}).m;
+      if (mid == null || mid === -1 || !ab[String(mid)]) return null;
+      const [name, atext] = ab[String(mid)];
+      return { id: mid, name: String(name || ''), text: String(atext || '') };
+    })(),
+    // ユニーク系アビリティ（d.ab.u: [[?,?,アビリティID,?],...]）。
+    // スターターアビリティ・ユニークアビリティ・特殊カバーチェンジ・ユニークゲージ・
+    // 力の共鳴(ULTRA) などが入る。ステータス式には乗らないため原文と参照タグのみ保存する
+    // （フィールド名は互換のため ultra_ability のまま）
     // 効果は与ダメージ等の戦闘効果でステータス式(❸)には乗らないため、
     // 原文と参照タグ（リーダー/同タグ編成判断の表示用）のみ保存する
     ultra_ability: (() => {
@@ -350,6 +372,7 @@ export function parseCharacterPage(html, id) {
     })(),
     equip_ids: eq.map((e) => Number(e[0])).filter(Number.isFinite),
     arts,
+    arts_detail,
   };
 }
 
@@ -703,6 +726,7 @@ async function merge() {
       z_ability: detail?.z_ability || [],
       deploy_z_ability: detail?.deploy_z_ability || [],
       zenkai_ability: detail?.zenkai_ability || [],
+      main_ability: detail?.main_ability || null,
       ultra_ability: (detail?.ultra_ability || []).map((u) => ({
         ...u,
         // 参照タグは本文からグローバルなタグ表で抽出し直す（抽出ロジック更新を再取得なしで反映）
@@ -794,6 +818,25 @@ async function merge() {
       if (!f || !Array.isArray(f.equip_char_ids) || f.equip_char_ids.length === 0) continue;
       if (!f.equip_char_ids.includes(ch.id)) f.equip_char_ids.push(ch.id);
     }
+  }
+
+  // サイト内タグ（§33）: アビリティ本文から「トリガー×効果」で特徴を機械分類する。
+  // 本文（特にアーツ詳細）は大きいので公開データには出さず、ここで判定結果のIDだけを持たせる
+  let siteTagDefs = null;
+  try { siteTagDefs = JSON.parse(await readFile(join(ROOT, 'game_data', 'site_tags.json'), 'utf8')); }
+  catch { /* 定義が無ければサイト内タグは付けない */ }
+  if (siteTagDefs) {
+    let tagged = 0;
+    for (const [cid, out] of Object.entries(charactersOut)) {
+      const detail = chars[cid];
+      const tags = computeSiteTags(
+        { ...out, arts_detail: detail?.arts_detail || [] },
+        siteTagDefs,
+        { uniqueFragments: exclusiveUniqueFragments(cid, fragmentsOut) }
+      );
+      if (tags.length) { out.site_tags = tags; tagged++; }
+    }
+    console.log(`サイト内タグ: ${tagged} 体に付与（定義 ${(siteTagDefs.tags || []).length} 種）`);
   }
 
   // 効果行レポート（effect_map 整備用）

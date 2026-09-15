@@ -61,6 +61,7 @@ function defaultCharFilter() {
     q: '', sort: 'id', desc: true,
     els: [], rarities: [], ll: false, styles: [],
     owned: '', zenkai: false, tagName: '', zStat: '',
+    siteTags: [], // サイト内タグ（§33）。複数選んだらAND
   };
 }
 
@@ -92,7 +93,8 @@ function applyCharSortFilter(defs, f) {
     (f.owned === '' || (f.owned === 'owned') === isOwned(d.id)) &&
     (!f.zenkai || d.zenkai) &&
     (tagId == null || Number.isNaN(tagId) || (d.tags || []).includes(tagId)) &&
-    (!f.zStat || charBoostsStat(d, f.zStat)));
+    (!f.zStat || charBoostsStat(d, f.zStat)) &&
+    (f.siteTags.length === 0 || f.siteTags.every((t) => (d.site_tags || []).includes(t))));
 
   const val = (d) => {
     switch (f.sort) {
@@ -115,6 +117,41 @@ function applyCharSortFilter(defs, f) {
 }
 
 /** ソート/フィルタ操作UI（キャラタブと編成のキャラ選択で共用） */
+/**
+ * サイト内タグ（§33）の絞り込みUI。系統ごとにたたんで並べる。
+ * 実際に1体以上に付いているタグだけを出す（空振りする選択肢を並べない）。
+ */
+function siteTagFilterUI(f, onChange, chip) {
+  const defs = state.game.siteTags;
+  if (!defs || !(defs.tags || []).length) return null;
+  const count = new Map();
+  for (const d of Object.values(state.game.characters)) {
+    for (const t of d.site_tags || []) count.set(t, (count.get(t) || 0) + 1);
+  }
+  const byCat = new Map();
+  for (const t of defs.tags) {
+    if (!count.get(t.id)) continue;
+    if (!byCat.has(t.category)) byCat.set(t.category, []);
+    byCat.get(t.category).push(t);
+  }
+  if (byCat.size === 0) return null;
+  const rows = (defs.categories || []).filter((c) => byCat.has(c.id)).map((c) =>
+    el('div', {},
+      el('div', { class: 'item-title', style: 'margin-top:6px' }, c.label),
+      el('div', { class: 'chip-row' },
+        byCat.get(c.id).map((t) => chip(
+          `${t.label}(${count.get(t.id)})`,
+          () => f.siteTags.includes(t.id),
+          () => {
+            const i = f.siteTags.indexOf(t.id);
+            if (i >= 0) f.siteTags.splice(i, 1); else f.siteTags.push(t.id);
+          })))));
+  return el('details', { open: f.siteTags.length > 0 },
+    el('summary', {}, `能力で絞り込む（サイト内タグ）${f.siteTags.length ? ` — ${f.siteTags.length}件選択中` : ''}`),
+    el('p', { class: 'small-note' }, 'アビリティ本文から「いつ・何をするか」で自動分類したタグです。複数選ぶと全て満たすキャラだけが残ります。'),
+    rows);
+}
+
 function charFilterControls(f, onChange) {
   const chip = (label, isOn, toggle) => el('button', {
     class: `chip${isOn() ? ' on' : ''}`,
@@ -161,6 +198,7 @@ function charFilterControls(f, onChange) {
           el('select', { onchange: (e) => { f.zStat = e.target.value; onChange(); } },
             el('option', { value: '', selected: f.zStat === '' }, '指定なし'),
             STATS.map((s) => el('option', { value: s, selected: f.zStat === s }, STAT_LABELS[s]))))),
+      siteTagFilterUI(f, onChange, chip),
       el('button', {
         class: 'btn secondary small',
         onclick: () => { Object.assign(f, defaultCharFilter()); onChange(true); },
@@ -1538,6 +1576,29 @@ function openFragPicker(cid, slotIdx) {
 
 // ---------------------------------------------------------------- キャラタブ / キャラ詳細シート
 
+/** キャラ詳細に出すサイト内タグ（§33）。系統ごとにまとめて表示する */
+function siteTagsView(def) {
+  const defs = state.game.siteTags;
+  const ids = def.site_tags || [];
+  if (!defs || ids.length === 0) return null;
+  const byId = new Map((defs.tags || []).map((t) => [t.id, t]));
+  const byCat = new Map();
+  for (const id of ids) {
+    const t = byId.get(id);
+    if (!t) continue;
+    if (!byCat.has(t.category)) byCat.set(t.category, []);
+    byCat.get(t.category).push(t);
+  }
+  if (byCat.size === 0) return null;
+  return el('div', {},
+    el('h3', {}, '能力タグ（サイト内分類）'),
+    (defs.categories || []).filter((c) => byCat.has(c.id)).map((c) =>
+      el('div', { class: 'effline' },
+        el('span', { class: 'small-note' }, `${c.label}: `),
+        el('span', {}, byCat.get(c.id).map((t) => t.label).join(' / ')))),
+    el('p', { class: 'small-note' }, 'アビリティ・アーツ・専用ユニークフラグメントの本文から自動分類したタグです（キャラタブで絞り込めます）。'));
+}
+
 function renderChars() {
   const root = $('#chars-view');
   const f = ui.charFilter;
@@ -1817,6 +1878,7 @@ function openCharSheet(cid) {
     el('h3', {}, 'ステータス'),
     statTable,
     ultraView(),
+    siteTagsView(def),
     el('h3', {}, 'アビリティ補正（現在の設定で有効な値）'),
     abilityPreview(),
     partyBenefitPreview(),
