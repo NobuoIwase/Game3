@@ -796,8 +796,8 @@ test('§37 与ダメージは ❸ に混ざらず、実効火力として別に�
   assert.equal(withDmg.stats.strike_atk.final, base.stats.strike_atk.final,
     '与ダメージは表示❸を変えない（実機のステータス画面と一致させる）');
   assert.equal(withDmg.stats.strike_atk.damagePct, 50);
-  assert.ok(Math.abs(withDmg.stats.strike_atk.effective - base.stats.strike_atk.final * 1.5) < 1e-6,
-    '実効火力 = ❸ × (1 + 与ダメージ%)');
+  assert.equal(withDmg.stats.strike_atk.effective, undefined,
+    '❸に掛けた“火力”は実機の式が別なので出さない（§44）');
   assert.equal(withDmg.stats.blast_atk.damagePct, 0, '打撃指定の与ダメージは射撃に乗らない');
 });
 
@@ -815,12 +815,15 @@ test('§37 アビリティ由来の与ダメージは damage バケツに入り 
   assert.equal(ext['1'].warnings.length, 0, '与ダメージは「未検証の基礎なし」警告を出さない');
 });
 
-test('§37 与ダメージは最適化スコアに効く（基礎なしと同じ乗算項）', async () => {
-  const { bestForCharacter } = await import('../js/optimizer.js');
+// §44: 与ダメージは「ステータスとは別枠で加算される戦闘補正」なので採点に入れない。
+// （§37では乗算項として採点に入れていたが、実機は与ダメージ／ダメージガードが
+//  全ソース加算の1プールで、ステータスと等価に比べられないためユーザー指摘で撤回）
+test('§44 与ダメージは最適化スコアに入れない（表示用に%だけ残す）', async () => {
+  const { bestForCharacter, characterDetail } = await import('../js/optimizer.js');
   const member = { character: charaV2(1, [7]), my: myOf() };
   const mkFrag = (id, name, lines) => ({ id, name, slots: [{ label: 'SLOT 1', star7: false, lines }] });
   const fragmentsById = {
-    901: mkFrag(901, '与ダメ大', [{ text: '打撃アーツ与ダメージ', value: 100 }]),
+    901: mkFrag(901, '与ダメ特大', [{ text: '打撃アーツ与ダメージ', value: 300 }]),
     902: mkFrag(902, '基礎小', [{ text: '基礎打撃攻撃力', value: 5 }]),
   };
   const counts = { 901: 6, 902: 6 };
@@ -828,7 +831,11 @@ test('§37 与ダメージは最適化スコアに効く（基礎なしと同じ
     member, ext: null, fragmentsById, counts,
     weights: { strike_atk: 1 }, effectMap, context: null,
   });
-  assert.ok(r.ids.map(String).includes('901'), '与ダメージ+100%は基礎+5%より高く評価される');
+  assert.ok(!r.ids.map(String).includes('901'), '与ダメージ+300%でもステータス採点では選ばれない');
+  assert.ok(r.ids.map(String).includes('902'), '基礎ありの方が選ばれる');
+  // 表示用には残っている
+  const d = characterDetail({ member, ext: null, fragmentList: [fragmentsById[901]], effectMap, context: null });
+  assert.equal(d.stats.strike_atk.damagePct, 300, '与ダメージ%は情報として保持する');
 });
 
 // §38: ZENKAIアビリティは星（限界突破）ではなく ZENKAIレベルで決まる。
@@ -1017,7 +1024,9 @@ test('§43 打撃/射撃の「総合重視」は反対側の攻撃を計上し�
   assert.match(strike, /blast_atk:\s*0\b/, '打撃特化では射撃攻撃を0にする');
   assert.match(blast, /strike_atk:\s*0\b/, '射撃特化では打撃攻撃を0にする');
   for (const w of [strike, blast]) {
-    assert.match(w, /strike_def:\s*0\.9/, '防御は引き上げる');
-    assert.match(w, /hp:\s*0\.09/, '体力も引き上げる');
+    // 防御は引き上げるが、主軸を潰さない範囲に留める（§44: 0.9 では主軸が -11% 落ちた）
+    assert.match(w, /strike_def:\s*0\.6/, '防御は 0.5→0.6 に引き上げる');
+    assert.match(w, /blast_def:\s*0\.6/);
+    assert.match(w, /hp:\s*0\.08/, '体力も少し引き上げる');
   }
 });

@@ -443,6 +443,7 @@ function zenkaiEffectTable({ battleMembers, candidates, effectMap, leaderId }) {
       const corr = {}, nonBase = {};
       const add = (effects) => {
         for (const e of effects) {
+          if (e.damage) continue; // 与ダメージはステータス採点に入れない（§44）
           if (e.base === false) nonBase[e.stat] = (nonBase[e.stat] || 0) + e.value;
           else corr[e.stat] = (corr[e.stat] || 0) + e.value;
         }
@@ -479,6 +480,7 @@ export function scoreZenkaiCandidates({ battleMembers, candidates, weights, weig
       const nonBase = {};
       const add = (effects) => {
         for (const e of effects) {
+          if (e.damage) continue; // 与ダメージはステータス採点に入れない（§44）
           if (e.base === false) nonBase[e.stat] = (nonBase[e.stat] || 0) + e.value;
           else corr[e.stat] = (corr[e.stat] || 0) + e.value;
         }
@@ -546,10 +548,10 @@ function makeScoreContext(member, ext, weights, weightedStats, warnings) {
     }
     const e = ext || { z: {}, zenkai: {}, ll: {}, extNonBase: {}, damage: {} };
     const extBase = (e.z[s] || 0) + (e.zenkai[s] || 0) + (e.ll[s] || 0);
-    // 与ダメージ（§37）は最終火力への乗算なので、採点上は基礎なし補正とまったく同じ扱いでよい。
-    // ここで合算しておくと探索ループ・分枝限定の上界計算に手を入れずに済む。
-    // 表示（characterDetail）側は ext.damage を分離したまま使うので ❸ は実機と一致する
-    const extNonBase = (e.extNonBase ? (e.extNonBase[s] || 0) : 0) + (e.damage ? (e.damage[s] || 0) : 0);
+    // 与ダメージは採点に入れない（§44）。実機では与ダメージ／ダメージガードが
+    // 全ソースで「加算される1つのプール」で、ステータスとは別枠の戦闘補正のため。
+    // 情報としては ext.damage に保持し、表示だけで使う
+    const extNonBase = e.extNonBase ? (e.extNonBase[s] || 0) : 0;
     const final0 = finalStat({ base: sb.base, boost: sb.boost, corr: extBase, nonBase: extNonBase });
     stats.push({
       stat: s, weight: weights[s],
@@ -624,6 +626,7 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, conte
     const nonBase = new Float64Array(weightedStats.length);
     let relevant = false;
     for (const e of effects) {
+      if (e.damage) continue; // 与ダメージはステータス採点に入れない（§44）
       const i = weightedStats.indexOf(e.stat);
       if (i < 0) continue;
       if (e.base) base[i] += e.value * penalty; else nonBase[i] += e.value * penalty;
@@ -1005,9 +1008,9 @@ export function characterDetail({ member, ext, fragmentList, effectMap, context 
       fragNonBase: nonBasePct[s],
       extNonBase: e.extNonBase ? (e.extNonBase[s] || 0) : 0,
     });
-    // 与ダメージ込みの実効火力（❸ × (1+与ダメージ%)）。表示で「火力」として別に出す
+    // 与ダメージは「ステータスとは別枠で全ソース加算される戦闘補正」なので %だけ情報として持つ。
+    // ❸に掛けた“火力”は実機の式が別（ダメージガード等も同じプールに入る）ため出さない（§44）
     stats[s].damagePct = damagePct[s];
-    stats[s].effective = stats[s].final * (damagePct[s] * 0.01 + 1);
   }
   return { stats, unknown, conditionalOff, damagePct };
 }
@@ -1101,7 +1104,8 @@ export function theoreticalMax({
   const zFree = resolved.map((r) => ({ r, s: sumGroupsFor(r.ab.z, null, true) }));
   onProgress?.(0.25);
 
-  const val = (sums) => (sums.base[stat] || 0) + (sums.nonBase[stat] || 0) + (sums.damage[stat] || 0);
+  // 与ダメージはステータスではないので足さない（§44）
+  const val = (sums) => (sums.base[stat] || 0) + (sums.nonBase[stat] || 0);
   const stage1 = [];
   for (const { c } of resolved) {
     const sb = statBase(c, my(c.id), stat);

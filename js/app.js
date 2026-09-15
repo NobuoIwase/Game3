@@ -284,11 +284,12 @@ function charFilterControls(f, onChange) {
 // 多ステータス目標からは除外（単一ステータス指定や総合ステ最大では従来どおり扱える）。
 const PRESETS = {
   strike_pure: { label: '完全打撃特化', weights: { strike_atk: 1 } },
-  // §43: 「打撃特化（総合重視）」は “打撃を伸ばしつつ、防御と体力も上げる” という意味にする。
-  // 反対側の攻撃（射撃）は 0 にして計上しない。以前は 0.15 入れていたため、
-  // 射撃しか上げないフラグやアビリティが僅差で勝つことがあった。
-  // 代わりに防御 0.5→0.9 / 体力 0.07→0.09 に引き上げて「総合」の意味を強める
-  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, blast_atk: 0, hp: 0.09, strike_def: 0.9, blast_def: 0.9 } },
+  // §43/§44: 「打撃特化（総合重視）」は “打撃を伸ばしつつ、防御と体力も上げる” という意味。
+  // 反対側の攻撃（射撃）は 0 にして計上しない（以前は 0.15 入っていたため、
+  // 射撃しか上げないフラグが僅差で勝つことがあった）。
+  // 防御は 0.5→0.6 に留める。実データ50体で測ると 0.9 では主軸の打撃が -11% も落ちて
+  // 「主軸を伸ばしつつ」に反した。0.6 なら主軸 -3% で防御 +7%（§44）
+  strike_total: { label: '打撃特化（総合重視）', weights: { strike_atk: 1, blast_atk: 0, hp: 0.08, strike_def: 0.6, blast_def: 0.6 } },
   balance: { label: '総合バランス', weights: { hp: 0.08, strike_atk: 0.8, blast_atk: 0.8, strike_def: 0.75, blast_def: 0.75 } },
   // 「付いている補正%の合計」を最大化する（+1%はどのステータスでも等価）。
   // percent: true のプリセットは、キャラごとに ❶ で正規化した重み（w×100000/❶）を実行時に生成する。
@@ -297,7 +298,7 @@ const PRESETS = {
     label: '総合強化重視（補正%の合計を最大化）', percent: true,
     weights: { hp: 1, strike_atk: 1, blast_atk: 1, strike_def: 1, blast_def: 1 },
   },
-  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0, hp: 0.09, strike_def: 0.9, blast_def: 0.9 } },
+  blast_total: { label: '射撃特化（総合重視）', weights: { blast_atk: 1, strike_atk: 0, hp: 0.08, strike_def: 0.6, blast_def: 0.6 } },
   blast_pure: { label: '完全射撃特化', weights: { blast_atk: 1 } },
   // 体力被回復量（heal_received）は擬似ステータス（§25: +1% = 重み×1,000点。
   // 重み1で防御+0.6〜0.8%相当）。回復役がいるパーティでは耐久に直結する
@@ -694,7 +695,7 @@ function resonanceSummary(members) {
     el('p', { class: 'small-note' },
       `合計 +${total}%（与ダメージ・気力回復速度）。`
       + 'メンバーの場合は指定タグの人数で増えるので、タグを揃えるほど伸びます。'
-      + '与ダメージぶんは火力に反映され、ステータス表示(❸)には含まれません。'));
+      + 'これらはステータスとは別枠の戦闘補正で、ステータス計算・最適化には含めていません（§44）。'));
 }
 
 /**
@@ -936,12 +937,12 @@ function renderParty() {
               ' ',
               el('span', { class: 'up' }, `フラグ換算 +${fmt(st.fragTotal, 1)}% / 補正 +${fmt(st.corr5, 0)}%`))
           : el('div', { class: 'm-stats' }, el('span', { class: 'small-note' }, 'ステータス未取得')),
-        // 与ダメージ（§37）。ゲームのステータス画面には出ないので ❸ とは分けて出す
+        // 与ダメージ（§44）。ステータスとは別枠で全ソース加算される戦闘補正なので、
+        // ❸ にも採点にも入れず、情報として%だけ出す
         st && st.damagePct > 0
           ? el('div', { class: 'effline' },
-              el('span', { class: 'up' },
-                `火力 ${fmt0(st.effective)}（与ダメージ +${fmt(st.damagePct, 0)}%）`),
-              el('span', { class: 'small-note' }, ' ※ステータス表示には含まれません'))
+              el('span', { class: 'up' }, `与ダメージ +${fmt(st.damagePct, 0)}%`),
+              el('span', { class: 'small-note' }, ' ※ステータスとは別枠（加算で積み上がる戦闘補正）。計算には含めていません'))
           : null,
         d?.conditionalOff?.length
           ? el('div', { class: 'effline' },
@@ -1916,7 +1917,8 @@ function resonanceView(def) {
       : el('p', { class: 'small-note' },
           `「${r.tagName}」1人につき +${r.perPct}%${r.capPct ? `（上限 ${r.capPct}%）` : ''}。`),
     el('p', { class: 'small-note' },
-      '与ダメージぶんは火力（❸×倍率）に反映されます。気力回復速度はステータスではないため計算には入れていません。'));
+      '与ダメージ・気力回復速度はステータスとは別枠の戦闘補正です。'
+      + '与ダメージは全ソースで加算されるプールに積み上がるため、ステータス計算・最適化には含めていません（§44）。'));
 }
 
 /**
@@ -2267,7 +2269,6 @@ function openCharSheet(cid) {
       resonanceView(def),
       el('p', { class: 'small-note' },
         'ステータス計算(❸)には含まれない戦闘効果です。'
-        + 'ただし「力の共鳴」の与ダメージぶんだけは火力（❸×倍率）として上に反映しています（§43）。'
         + 'リーダー枠に置く、または参照タグのキャラを編成すると強化されます。'),
       ...list.filter((u) => (u.text || '').trim() || (u.name || '').trim()).map((u) => el('div', { style: 'margin-bottom:8px' },
         el('div', { class: 'item-title' }, u.name),
