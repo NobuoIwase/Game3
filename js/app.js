@@ -12,7 +12,7 @@ import {
   zenkaiProvidersFor, sumGroupsFor, theoreticalMax, resonanceOf, resonanceEffect,
 } from './optimizer.js';
 import * as store from './store.js';
-import { placeChar, stillInParty, proudLeadersOf } from './party_rules.js';
+import { placeChar, stillInParty, proudLeadersOf, sanitizeThird, PROUD_PER_TEAM_MAX } from './party_rules.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
 
 // ---------------------------------------------------------------- 状態
@@ -499,14 +499,16 @@ function defaultCharMy(def) {
   };
 }
 
-/** プラウドのチーム数と、各チームの枠範囲（§47: 3戦目を追加） */
+/**
+ * プラウドのチーム数（§47: 3戦目を追加）。
+ * 3戦目は「1戦目と2戦目のキャラ（パーティの6体）から、各戦2体まで編成できる3体での戦い」（§48）
+ */
 const PROUD_TEAMS = 3;
-const PROUD_REUSE_MAX = 2; // 3戦目は1・2戦目のキャラを2体まで再選出できる（3体とも同一は不可）
 /** 今のモードで使う枠のID（スタンダード=6枠 / プラウド=9枠）。空き枠は '' のまま */
 function activeSlotIds() {
   return ui.party.memberIds.slice(0, ui.party.mode === 'proud' ? PROUD_TEAMS * 3 : 6);
 }
-/** 重複を除いた並び（3戦目の再選出で同じキャラが2枠に入るため） */
+/** 重複を除いた並び（3戦目はパーティの6体から選ぶので、同じキャラが2枠に入る） */
 function uniqIds(ids) {
   const seen = new Set();
   const out = [];
@@ -528,13 +530,12 @@ function battleIds() {
 /** 枠番号 → チーム番号（プラウドのみ。0=1戦目 / 1=2戦目 / 2=3戦目） */
 function teamOfSlot(i) { return Math.floor(i / 3); }
 /**
- * プラウドのチーム別リーダー（teams と同じ並び）。
- * 1戦目・2戦目は各チームの先頭枠。3戦目のリーダー枠は固定で選べず、
- * **1戦目のリーダー（左上）を3戦目に再選出したときだけ** そのキャラがリーダーになる。
- * 選ばなければ3戦目はリーダー無し（§47 — ユーザー確認済み）
+ * プラウドのチーム別リーダー（teams と同じ並び — §48 ユーザー確認済み）。
+ * リーダーは常に1体・左上（枠0）のみ。**2戦目はリーダー無し**。
+ * 3戦目は左上のキャラを選んだときだけ、そのキャラがリーダー
  */
-function proudLeaders(l1, l2) {
-  return proudLeadersOf(ui.party.memberIds, ...(l1 === undefined ? [] : [l1, l2]));
+function proudLeaders(l1) {
+  return proudLeadersOf(ui.party.memberIds, ...(l1 === undefined ? [] : [l1]));
 }
 /**
  * プラウド時のチーム分け（1戦目=枠1-3 / 2戦目=枠4-6 / 3戦目=枠7-9）。
@@ -546,7 +547,7 @@ function proudTeams() {
   return Array.from({ length: PROUD_TEAMS }, (_, t) =>
     ui.party.memberIds.slice(t * 3, t * 3 + 3).filter((id) => id && charDef(id)));
 }
-/** このキャラが出るチーム番号の一覧（プラウド。3戦目の再選出なら2件） */
+/** このキャラが出るチーム番号の一覧（プラウド。3戦目にも出るなら2件） */
 function teamsOfChar(cid) {
   const out = [];
   ui.party.memberIds.slice(0, PROUD_TEAMS * 3).forEach((x, i) => {
@@ -643,8 +644,9 @@ function syncPartyToMyData() {
 function applyPartySnapshot(p) {
   if (!p) return;
   const ids = (p.member_ids || []).map((x) => (x == null || x === '' ? '' : String(x)));
-  // 旧データ（6枠）も読めるよう、足りない枠は空で埋める（§47 で9枠に拡張）
-  ui.party.memberIds = Array.from({ length: PROUD_TEAMS * 3 }, (_, i) => ids[i] || '');
+  // 旧データ（6枠）も読めるよう、足りない枠は空で埋める（§47 で9枠に拡張）。
+  // v2.35 の誤ったルール（6体の外から3戦目を選べた）で保存された3戦目はここで正す（§48）
+  ui.party.memberIds = sanitizeThird(Array.from({ length: PROUD_TEAMS * 3 }, (_, i) => ids[i] || '')).ids;
   ui.party.equips = JSON.parse(JSON.stringify(p.equips || {}));
   ui.party.mode = p.mode === 'proud' ? 'proud' : 'standard';
   if (p.display_stat) ui.displayStat = p.display_stat;
@@ -1032,21 +1034,23 @@ function renderParty() {
   const slot = (i) => {
     const id = ui.party.memberIds[i];
     const def = id ? charDef(id) : null;
-    // 3戦目は「1戦目のリーダーを再選出した枠」だけがリーダー（先頭枠ではない — §47）
+    // リーダーは左上の1体だけ。2戦目の先頭はリーダーではない。
+    // 3戦目は左上のキャラを選んだ枠だけがリーダー（§48）
     const isLeader = def && (proud
-      ? (i === 0 || i === 3 || (i >= 6 && String(id) === String(ui.party.memberIds[0] || '')))
+      ? (i === 0 || (i >= 6 && String(id) === String(ui.party.memberIds[0] || '')))
       : i === 0);
     const rel = def ? (relations[i] || 0) : 0;
     const powered = def && rel > (ui._prevRel[i] || 0);
-    // 3戦目の再選出（1・2戦目にも出ているキャラ）を枠の上で分かるようにする
-    const reused = proud && def && teamOfSlot(i) === 2
-      && ui.party.memberIds.slice(0, 6).some((x) => x && String(x) === String(id));
+    // 3戦目のキャラが1戦目・2戦目のどちらから来たかを枠の上に出す（各戦2体まで — §48）
+    const fromIdx = proud && def && teamOfSlot(i) === 2
+      ? ui.party.memberIds.slice(0, 6).findIndex((x) => x && String(x) === String(id))
+      : -1;
     const tile = def ? charTile(def, { onclick: () => openCharPicker(i), showOwned: false }) : null;
     if (tile && rel > 0) {
       tile.append(el('div', { class: 'rel-badge' }, `◎×${rel}`));
       if (powered) tile.classList.add('powerup');
     }
-    if (tile && reused) tile.append(el('div', { class: 'reuse-badge' }, '再選出'));
+    if (tile && fromIdx >= 0) tile.append(el('div', { class: 'reuse-badge' }, TEAM_LABELS[teamOfSlot(fromIdx)]));
     return el('div', { class: 'party-slot' },
       isLeader ? el('div', { class: 'leader-badge' }, 'LEADER') : null,
       tile || el('div', { class: 'slot-empty', onclick: () => openCharPicker(i) }, '＋'),
@@ -1169,9 +1173,10 @@ function renderParty() {
     proud
       ? el('p', { class: 'hint' },
           'プラウドバトル: 1戦目と2戦目は同一キャラを選べません。' +
-          `3戦目は1・2戦目のキャラを${PROUD_REUSE_MAX}体まで再選出できます（3体とも再選出は不可）。` +
+          `3戦目はパーティの6体から、1戦目・2戦目それぞれ${PROUD_PER_TEAM_MAX}体まで選ぶ3体での戦いです。` +
+          'リーダーは左上の1体だけで、2戦目にはリーダーがいません（3戦目は左上のキャラを選んだときだけリーダー付き）。' +
           'アビリティ補正と効果条件はチーム内の3体だけで判定されます。' +
-          'フラグメントは戦ごとに付け替えられないので、再選出キャラは同じ装備のまま2戦を戦います' +
+          'フラグメントは戦ごとに付け替えられないので、3戦目のキャラは同じ装備のまま2戦を戦います' +
           '（最適化は全出撃の合計で選びます）。3戦目を空けておけば2戦分だけで最適化します。')
       : el('p', { class: 'hint' },
           '上段がバトル出撃3体、下段はゼンカイ枠（Zアビ・ZENKAIアビがパーティ全体に乗ります。ZENKAI覚醒キャラ推奨）。'),
@@ -1714,12 +1719,10 @@ async function runOptimize() {
   let leaderCombos;
   if (ui.opt.optimizeLeader !== false) {
     if (proud) {
-      // 3戦目のリーダーは選べない（1戦目のリーダーを再選出したときだけそのキャラ — §47）。
-      // 探索するのは1戦目と2戦目のリーダーだけで、3戦目は1戦目の選択から決まる
+      // リーダーは左上の1体だけ（§48）。探索するのは「1戦目の誰を左上に置くか」だけで、
+      // 2戦目はリーダー無し、3戦目は左上のキャラを選んでいればそのキャラがリーダー
       const t1 = ui.party.memberIds.slice(0, 3).filter(Boolean);
-      const t2 = ui.party.memberIds.slice(3, 6).filter(Boolean);
-      leaderCombos = (t1.length ? t1 : [null]).flatMap((a) => (t2.length ? t2 : [null])
-        .map((b) => proudLeaders(a, b)));
+      leaderCombos = (t1.length ? t1 : [null]).map((a) => proudLeaders(a));
     } else {
       leaderCombos = bIds.map((id) => [id]);
     }
@@ -1902,8 +1905,7 @@ async function runOptimize() {
       leaderChanged.push(charDef(leaderId)?.name || leaderId);
     }
   };
-  if (proud) { moveToFront(best.leaders[0], 0); moveToFront(best.leaders[1], 3); }
-  else moveToFront(best.leaders[0], 0);
+  moveToFront(best.leaders[0], 0); // リーダーは左上の1体だけ（プラウドも同じ — §48）
 
   // 提案: パーティのタイプ構成に合わせて、より長所を伸ばせる最適化があれば計算しておく
   ui.suggestion = null;
@@ -1986,7 +1988,65 @@ async function runOptimize() {
 
 // ---------------------------------------------------------------- キャラ選択シート
 
+/**
+ * プラウド3戦目のキャラ選択（§48）。候補はパーティの6体だけ。
+ * 選べないキャラ（同じ戦から3体目になる）は暗くして理由を出す
+ */
+function openThirdPicker(slotIndex) {
+  const body = el('div', {});
+  const leaderId = String(ui.party.memberIds[0] || '');
+  const tiles = ui.party.memberIds.slice(0, 6).map((cid, i) => {
+    if (!cid || !charDef(cid)) return null;
+    const d = charDef(cid);
+    const sid = String(cid);
+    const r = placeChar(ui.party.memberIds, slotIndex, sid, 'proud');
+    const here = String(ui.party.memberIds[slotIndex] || '') === sid;
+    const tile = charTile(d, {
+      onclick: async () => {
+        if (r.error) { showMsg('warn', r.error); return; }
+        const prev = ui.party.memberIds[slotIndex];
+        ui.party.memberIds = r.ids;
+        if (prev && String(prev) !== sid && !stillInParty(r.ids, prev, 'proud')) delete ui.party.equips[String(prev)];
+        await persistMy();
+        closeSheet(); renderParty();
+      },
+    });
+    const badge = (text, bg) => el('div', { class: 'equipped-badge', style: `position:absolute;top:0;left:0;right:0;font-size:8px;font-weight:900;text-align:center;background:${bg};color:#fff` }, text);
+    tile.append(badge(TEAM_LABELS[teamOfSlot(i)] + (sid === leaderId ? '・LEADER' : ''),
+      i < 3 ? 'linear-gradient(180deg,#ffa640,#e0641e)' : 'linear-gradient(180deg,#5b8bff,#2a56c8)'));
+    if (here) tile.classList.add('selected');
+    if (r.error && !here) {
+      tile.style.opacity = '0.4';
+      tile.title = r.error;
+    }
+    return tile;
+  }).filter(Boolean);
+  const per = [0, 1].map((t) => ui.party.memberIds.slice(6, 9)
+    .filter((x, k) => x && 6 + k !== slotIndex && ui.party.memberIds.slice(t * 3, t * 3 + 3).includes(x)).length);
+  body.append(...nodes(
+    el('p', { class: 'small-note' },
+      `3戦目はパーティの6体から、1戦目・2戦目それぞれ${PROUD_PER_TEAM_MAX}体まで選ぶ3体での戦いです`
+      + `（この枠以外に 1戦目から${per[0]}体・2戦目から${per[1]}体）。`
+      + '左上のリーダーを選ぶと3戦目でもリーダーになり、選ばなければ3戦目はリーダー無しです。'
+      + 'フラグメントは1・2戦目と共通です（戦ごとに付け替えられません）。'),
+    tiles.length
+      ? el('div', { class: 'char-grid' }, tiles)
+      : el('p', { class: 'hint' }, '先に1戦目・2戦目のキャラを選んでください。'),
+    ui.party.memberIds[slotIndex]
+      ? el('button', {
+          class: 'btn danger small', style: 'margin-top:8px',
+          onclick: async () => {
+            ui.party.memberIds[slotIndex] = ''; // 6体の中にいるので装備は残す
+            await persistMy(); closeSheet(); renderParty();
+          },
+        }, 'この枠を空にする')
+      : null));
+  openSheet(`3戦目 ${(slotIndex % 3) + 1} のキャラを選択`, body);
+}
+
 function openCharPicker(slotIndex) {
+  // 3戦目はパーティの6体からだけ選ぶ（§48）
+  if (ui.party.mode === 'proud' && slotIndex >= 6) { openThirdPicker(slotIndex); return; }
   const filter = defaultCharFilter(); // 既定は全キャラ表示（ソートは入手順・降順）
   const body = el('div', {});
   const grid = el('div', { class: 'char-grid' });
@@ -1995,15 +2055,13 @@ function openCharPicker(slotIndex) {
   const proud = ui.party.mode === 'proud';
   const rerenderGrid = () => {
     const inParty = new Set(activeSlotIds().filter(Boolean).map(String));
-    // プラウド3戦目の枠では、1・2戦目のキャラは「再選出」になる（入れ替えではない — §47）
-    const front = new Set(ui.party.memberIds.slice(0, 6).filter(Boolean).map(String));
     const defs = applyCharSortFilter(Object.values(state.game.characters), filter);
     grid.replaceChildren(...defs.map((d) => {
       const tile = charTile(d, {
         onclick: async () => {
           const sid = String(d.id);
           const prev = ui.party.memberIds[slotIndex];
-          // 入れ替え・3戦目の再選出上限は party_rules.js（純粋関数・テスト済み）で判定する
+          // 入れ替えと、それに伴う3戦目の整合は party_rules.js（純粋関数・テスト済み）で判定する
           const r = placeChar(ui.party.memberIds, slotIndex, sid, ui.party.mode);
           if (r.error) { showMsg('warn', r.error); return; }
           ui.party.memberIds = r.ids;
@@ -2012,13 +2070,15 @@ function openCharPicker(slotIndex) {
           ensureCharMy(sid);
           await persistMy();
           closeSheet(); renderParty();
-          if (r.reused) showMsg('info', `${d.name} を再選出しました。フラグメントは1・2戦目と共通です（戦ごとに付け替えられません）。`);
+          // 1・2戦目の変更で3戦目がルール外になった枠は空けたので知らせる（§48）
+          if (r.cleared?.length) {
+            showMsg('info', `3戦目から ${r.cleared.map((c) => charDef(c)?.name || c).join('・')} を外しました`
+              + `（3戦目はパーティの6体から、各戦${PROUD_PER_TEAM_MAX}体までのため）。`);
+          }
         },
       });
       const sid = String(d.id);
-      const badge = (text, bg) => el('div', { class: 'equipped-badge', style: `position:absolute;top:0;left:0;right:0;font-size:8px;font-weight:900;text-align:center;background:${bg};color:#fff` }, text);
-      if (proud && slotIndex >= 6 && front.has(sid)) tile.append(badge('再選出', 'linear-gradient(180deg,#5b8bff,#2a56c8)'));
-      else if (inParty.has(sid)) tile.append(badge('パーティ', 'linear-gradient(180deg,#ffa640,#e0641e)'));
+      if (inParty.has(sid)) tile.append(el('div', { class: 'equipped-badge', style: 'position:absolute;top:0;left:0;right:0;font-size:8px;font-weight:900;text-align:center;background:linear-gradient(180deg,#ffa640,#e0641e);color:#fff' }, 'パーティ'));
       return tile;
     }));
     if (defs.length === 0) grid.append(el('p', { class: 'hint' }, '該当なし。フィルタをリセットしてください。'));
@@ -2030,20 +2090,18 @@ function openCharPicker(slotIndex) {
   body.append(...nodes(
     controlsBox,
     el('p', { class: 'small-note' }, '未所持キャラを選ぶと自動で所持登録されます（ブースト値はソウルブースト最大で初期化）。'),
-    proud && slotIndex >= 6
-      ? el('p', { class: 'small-note' },
-          '3戦目: 1・2戦目のキャラは2体まで再選出できます（青の「再選出」）。'
-          + '1戦目のリーダー（左上）を選ぶと3戦目でもリーダーになり、選ばなければ3戦目はリーダー無しです。')
-      : null,
     ui.party.memberIds[slotIndex]
       ? el('button', {
           class: 'btn danger small',
           onclick: async () => {
             const prev = ui.party.memberIds[slotIndex];
             ui.party.memberIds[slotIndex] = '';
-            // 再選出キャラは別の枠にまだいるので装備を残す（§47）
+            // パーティから外れたキャラは3戦目からも外す（§48）
+            let cleared = [];
+            if (proud) ({ ids: ui.party.memberIds, cleared } = sanitizeThird(ui.party.memberIds));
             if (!stillInParty(ui.party.memberIds, prev, ui.party.mode)) delete ui.party.equips[String(prev)];
             await persistMy(); closeSheet(); renderParty();
+            if (cleared.length) showMsg('info', `3戦目から ${cleared.map((c) => charDef(c)?.name || c).join('・')} を外しました（パーティの6体にいないため）。`);
           },
         }, 'この枠を空にする')
       : null,

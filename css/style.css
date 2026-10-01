@@ -341,7 +341,9 @@ td.num { font-variant-numeric: tabular-nums; }
   position: absolute; bottom: 24%; left: 2px; font-size: 9px; font-weight: 900;
   background: rgba(15,110,50,.92); color: #b8ffcd; border-radius: 5px; padding: 0 4px;
 }
-/* プラウド3戦目の再選出キャラ（§47） */
+/* プラウド3戦目のキャラ選択で、今この枠にいるキャラ（§48） */
+.char-tile.selected { outline: 3px solid var(--accent); outline-offset: -1px; }
+/* プラウド3戦目のキャラが1戦目・2戦目のどちらから来たか（§47 / §48） */
 .char-tile .reuse-badge {
   position: absolute; top: 2px; right: 2px; font-size: 9px; font-weight: 900;
   background: rgba(30,80,170,.92); color: #d8e8ff; border-radius: 5px; padding: 0 4px;
