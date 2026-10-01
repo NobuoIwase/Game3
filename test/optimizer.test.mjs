@@ -1195,3 +1195,139 @@ test('§46 UI: エース指定の既定値と、下限の既定 60%', async () =
   assert.match(src, /objective:\s*zObjective/, 'pickZenkaiMembers に目的関数を渡す');
   assert.match(src, /aceId:\s*aceMode \? String\(ui\.opt\.aceId\) : undefined/, 'optimizeParty にもエースを渡す');
 });
+
+// §47: プラウド3戦目。1・2戦目のキャラを2体まで再選出できるので、
+// 同じキャラが2チームに出る。フラグは戦ごとに付け替えられないので1組で全戦を戦う。
+test('§47 チーム別補正: 再選出キャラはチームごとに違う補正を受ける', async () => {
+  const { partyAbilityCorrectionsByTeam } = await import('../js/optimizer.js');
+  const zAb = (tag, value) => [{ id: 0, name: 'ZアビリティI', groups: [{ cond: [[{ tag }]], effects: [{ text: '基礎打撃攻撃力', value }], unresolved: [], raw: '' }] }];
+  const A = { character: charaV2(1, [7]), my: myOf() };                                   // 1戦目と3戦目に出る
+  const B = { character: charaV2(2, [99], {}, { z_ability: zAb(7, 30) }), my: myOf() };   // 1戦目: Aに+30
+  const C = { character: charaV2(3, [99], {}, { z_ability: zAb(7, 10) }), my: myOf() };   // 3戦目: Aに+10
+  const members = [A, B, C];
+  const teams = [['1', '2'], [], ['1', '3']];
+  const byTeam = partyAbilityCorrectionsByTeam({ members, teams, effectMap, leaders: [null, null, null] });
+  assert.equal(byTeam.length, 3, 'teams と同じ並び（空チームも位置を保つ）');
+  assert.deepEqual(byTeam[1], {}, '空チームは空');
+  assert.equal(byTeam[0]['1'].z.strike_atk, 30, '1戦目ではBから+30');
+  assert.equal(byTeam[2]['1'].z.strike_atk, 10, '3戦目ではCから+10（後のチームで上書きされない）');
+  // 代表値（cid キー）は最初に出るチームの値
+  const merged = partyAbilityCorrections({ members, teams, effectMap, leaders: [null, null, null] });
+  assert.equal(merged['1'].z.strike_atk, 30, '代表値は1戦目');
+});
+
+test('§47 再選出キャラのフラグは全出撃の合計で選ぶ（1戦目だけで発動する条件付きに偏らない）', () => {
+  // 条件付き: 「タグ26が2人いると打撃+60」/ 無条件: 打撃+40
+  const condFrag = {
+    id: 20, name: '条件付き', equip_char_ids: [1],
+    slots: [{ label: 'SLOT 1', star7: false, lines: [
+      { text: '基礎打撃攻撃力', value: 60, cond: [[{ tag: 26 }]], cond_count: 2, cond_exclude_self: false, cond_scope: 'battle', cond_raw: '「タグ：未来」が2人いると、' },
+    ] }],
+  };
+  const plainFrag = {
+    id: 21, name: '無条件', equip_char_ids: [1],
+    slots: [{ label: 'SLOT 1', star7: false, lines: [{ text: '基礎打撃攻撃力', value: 40 }] }],
+  };
+  const A = { character: charaV2(1, [26]), my: myOf(1) };
+  const B = { character: charaV2(2, [26]), my: myOf(1) };    // 1戦目の相棒（タグ26）
+  const C = { character: charaV2(3, [99]), my: myOf(1) };    // 3戦目の相棒（タグ無関係）
+  const info = (m) => ({ id: m.character.id, tags: m.character.tags, element: m.character.element });
+  const ctxTeam1 = { selfId: 1, members: [info(A), info(B)] };   // 条件成立
+  const ctxTeam3 = { selfId: 1, members: [info(A), info(C)] };   // 条件不成立
+  const base = {
+    fragmentsById: { 20: condFrag, 21: plainFrag }, counts: { 20: 6, 21: 6 },
+    weights: { strike_atk: 1 }, effectMap, targets: 'all', unmetPenalty: undefined,
+  };
+  // 1戦目だけに出るなら条件付き(+60)が勝つ
+  const only1 = optimizeParty({
+    ...base, members: [A, B], battleIds: ['1', '2'], teams: [['1', '2']], leaders: [null],
+    contexts: { 1: ctxTeam1 }, contextsByTeam: [{ 1: ctxTeam1 }],
+  });
+  assert.deepEqual(only1.assignments['1'].ids, ['20'], '1戦だけなら条件付き');
+  // 1戦目と3戦目に出るなら 60+0 < 40+40 で無条件が勝つ
+  const both = optimizeParty({
+    ...base, members: [A, B, C], battleIds: ['1', '2', '3'],
+    teams: [['1', '2'], [], ['1', '3']], leaders: [null, null, null],
+    contexts: { 1: ctxTeam1 }, contextsByTeam: [{ 1: ctxTeam1 }, {}, { 1: ctxTeam3 }],
+  });
+  assert.deepEqual(both.assignments['1'].ids, ['21'], '2戦に出るなら両方で効く無条件');
+  assert.equal(Object.keys(both.assignments).filter((k) => k === '1').length, 1, 'フラグの割当は1キャラ1組');
+  assert.ok(Array.isArray(both.extByTeam) && both.extByTeam.length === 3, 'チーム別補正を返す');
+});
+
+test('§47 所持数: 再選出キャラは1組しか装備しないので1枚しか消費しない', () => {
+  const f = frag(100, [{ stat: 'strike_atk', base: true, value: 38 }]);
+  const filler = frag(101, [{ stat: 'strike_atk', base: true, value: 1 }]);
+  const mk = (id) => ({ character: charaV1(id, [], { strike_atk: 200_000 }), my: myOf(1) });
+  const members = [mk(1), mk(2), mk(3)];
+  // 1戦目 [1,2] / 3戦目 [1,3]。強フラグ2枚 → 3キャラ（出撃4回）でも2枚で足りる
+  const r = optimizeParty({
+    members, battleIds: ['1', '2', '3'], teams: [['1', '2'], [], ['1', '3']], leaders: [null, null, null],
+    contexts: {}, fragmentsById: { 100: f, 101: filler }, counts: { 100: 2, 101: 6 },
+    weights: { strike_atk: 1 }, effectMap, targets: 'all',
+  });
+  const holders = Object.entries(r.assignments).filter(([, a]) => a.ids.includes('100')).map(([k]) => k).sort();
+  assert.equal(holders.length, 2, '2枚を2キャラで使う');
+  assert.ok(holders.includes('1'), '2戦に出るキャラ1が優先して取る（伸びが2戦ぶん効く）');
+});
+
+test('§47 奪い合い + タイプ別重み（正規化あり）でも、2戦に出るキャラの伸びは2倍で効く', () => {
+  const f = frag(100, [{ stat: 'strike_atk', base: true, value: 38 }]);
+  const mk = (id) => ({ character: charaV1(id, [], { strike_atk: 200_000 }), my: myOf(1) });
+  const members = [mk(1), mk(2)];
+  // 1枚しかない。キャラ1は1戦目のみ、キャラ2は1戦目と3戦目
+  const p = {
+    members, battleIds: ['1', '2'], teams: [['1', '2'], [], ['2']], leaders: [null, null, null],
+    contexts: {}, fragmentsById: { 100: f }, counts: { 100: 1 },
+    weights: { strike_atk: 1 }, effectMap, targets: 'all',
+    weightsById: { 1: { strike_atk: 1 }, 2: { strike_atk: 1 } },   // 正規化経路を通す
+  };
+  const r = optimizeParty(p);
+  assert.ok(r.assignments['2'].ids.includes('100'), '2戦に出るキャラ2が取る');
+});
+
+test('§47 チーム無しの従来呼び出し（スタンダード）は挙動が変わらない', () => {
+  const f = frag(100, [{ stat: 'strike_atk', base: true, value: 38 }]);
+  const mk = (id) => ({ character: charaV1(id, [], { strike_atk: 200_000 }), my: myOf(1) });
+  const r = optimizeParty({
+    members: [mk(1), mk(2)], battleIds: ['1', '2'], contexts: {},
+    fragmentsById: { 100: f }, counts: { 100: 6 }, weights: { strike_atk: 1 }, effectMap,
+  });
+  assert.deepEqual(r.assignments['1'].ids, ['100']);
+  assert.deepEqual(r.assignments['2'].ids, ['100']);
+  assert.equal(r.extByTeam, null, 'スタンダードはチーム別補正なし');
+});
+
+// §47: 「奪い合いが起こりうる（装備できるキャラ数 > 所持数）」だけでは重い分枝限定に入らない。
+// 独立に選んだ最良が所持数に収まっていれば、それが制約付きでも最良（厳密解）。
+test('§47 奪い合いが起こりうるだけなら、独立解が所持数に収まれば厳密解として返す', () => {
+  const strong = frag(100, [{ stat: 'strike_atk', base: true, value: 38 }]);
+  const weakForAll = frag(101, [{ stat: 'strike_atk', base: true, value: 2 }]);
+  const onlyHp = frag(102, [{ stat: 'hp', base: true, value: 40 }]);
+  const mk = (id, st) => ({ character: charaV1(id, [], st), my: myOf(1) });
+  // キャラ1・2は打撃、キャラ3は体力しか評価しない → 3体とも 101 を装備「できる」が欲しいのは2体まで
+  const members = [mk(1, { strike_atk: 200_000 }), mk(2, { strike_atk: 200_000 }), mk(3, { strike_atk: 0, hp: 1_000_000 })];
+  const r = optimizeParty({
+    members, battleIds: ['1', '2', '3'], contexts: {},
+    fragmentsById: { 100: strong, 101: weakForAll, 102: onlyHp }, counts: { 100: 2, 101: 2, 102: 6 },
+    weights: { strike_atk: 1, hp: 1 }, effectMap, targets: 'all',
+    weightsById: { 3: { hp: 1 } },
+  });
+  assert.equal(r.contended, false, '実際には奪い合っていない');
+  assert.equal(r.exact, true);
+  assert.deepEqual(r.assignments['1'].ids, ['100']);
+  assert.deepEqual(r.assignments['2'].ids, ['100']);
+  assert.deepEqual(r.assignments['3'].ids, ['102']);
+});
+
+test('§47 実際に所持数を超えて欲しがるときは従来どおり奪い合いを解く', () => {
+  const strong = frag(100, [{ stat: 'strike_atk', base: true, value: 38 }]);
+  const mk = (id) => ({ character: charaV1(id, [], { strike_atk: 200_000 }), my: myOf(1) });
+  const r = optimizeParty({
+    members: [mk(1), mk(2), mk(3)], battleIds: ['1', '2', '3'], contexts: {},
+    fragmentsById: { 100: strong }, counts: { 100: 2 }, weights: { strike_atk: 1 }, effectMap, targets: 'all',
+  });
+  assert.equal(r.contended, true);
+  const used = Object.values(r.assignments).filter((a) => a.ids.includes('100')).length;
+  assert.equal(used, 2, '所持2枚を超えて配らない');
+});

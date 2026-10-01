@@ -281,26 +281,47 @@ export function abilityCorrections(members, battleIds, effectMap, opts = {}) {
  */
 export function partyAbilityCorrections({ members, battleIds, teams, effectMap, leaderId, leaders }) {
   if (Array.isArray(teams) && teams.length > 0) {
+    // 同じキャラが複数チームに出る（プラウド3戦目の再選出 — §47）場合は、
+    // 最初に出るチームの補正を代表値として返す。チーム別の値は partyAbilityCorrectionsByTeam で取る
     const zero = () => Object.fromEntries(ALL_STATS.map((s) => [s, 0]));
     const out = {};
     for (const m of members) {
       out[String(m.character.id)] = { z: zero(), zenkai: zero(), ll: zero(), extNonBase: zero(), damage: zero(), warnings: [], unknown: [] };
     }
-    teams.forEach((teamIds, i) => {
-      const idSet = new Set(teamIds.map(String));
-      const teamMembers = members.filter((m) => idSet.has(String(m.character.id)));
-      if (teamMembers.length === 0) return;
-      // leaders が渡されている場合はその値に従う（null = リーダー枠が空 → 特殊ルールなし）。
-      // leaders 省略時のみ各チーム先頭へフォールバックする
-      const teamLeader = leaders ? (leaders[i] ?? null) : teamIds[0];
-      Object.assign(out, abilityCorrections(teamMembers, teamIds, effectMap, { leaderId: teamLeader }));
-      applyResonance(out, teamMembers, teamLeader, effectMap);
-    });
-    return out;
+    return mergeFirstAppearance(out, partyAbilityCorrectionsByTeam({ members, teams, effectMap, leaders }));
   }
   const out = abilityCorrections(members, battleIds, effectMap, { leaderId });
   applyResonance(out, members, leaderId, effectMap);
   return out;
+}
+
+/** チーム別の補正を cid キーへ畳む。同じキャラが複数チームにいれば最初のチームを採る */
+function mergeFirstAppearance(out, byTeam) {
+  for (let i = byTeam.length - 1; i >= 0; i--) Object.assign(out, byTeam[i]);
+  return out;
+}
+
+/**
+ * プラウドのチーム別アビリティ補正（§47）。teams と同じ並びで `{cid: ext}` の配列を返す。
+ *
+ * プラウドの3戦目は1・2戦目のキャラを2体まで再選出できるため、
+ * **同じキャラが2チームに出て、チームごとに受ける補正が違う**ことがある
+ * （チームメイトもリーダーも違うので、Zアビ・ZENKAIアビ・力の共鳴の当たり方が変わる）。
+ * cid だけをキーにすると後のチームで上書きされるので、チーム単位で分けて持つ。
+ * 空チームは空オブジェクト（添字は leaders と対応させたまま保つ）。
+ */
+export function partyAbilityCorrectionsByTeam({ members, teams, effectMap, leaders }) {
+  return (teams || []).map((teamIds, i) => {
+    const idSet = new Set((teamIds || []).map(String));
+    const teamMembers = members.filter((m) => idSet.has(String(m.character.id)));
+    if (teamMembers.length === 0) return {};
+    // leaders が渡されている場合はその値に従う（null = リーダー枠が空 → 特殊ルールなし）。
+    // leaders 省略時のみ各チーム先頭へフォールバックする
+    const teamLeader = leaders ? (leaders[i] ?? null) : teamIds[0];
+    const out = abilityCorrections(teamMembers, teamIds, effectMap, { leaderId: teamLeader });
+    applyResonance(out, teamMembers, teamLeader, effectMap);
+    return out;
+  });
 }
 
 /**
@@ -653,7 +674,7 @@ export function fragsConflict(a, b) {
   return fragSpecies(a) === fragSpecies(b) && isAwakened(a) !== isAwakened(b);
 }
 
-function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings, avoidUnmetCond, unmetPenalty) {
+function prepareItems(candidates, counts, effectMap, weightedStats, stars, context, includeTournament, allWarnings, avoidUnmetCond, unmetPenalty, excludedOut) {
   const items = [];
   for (const frag of candidates) {
     if (isTournamentOnly(frag) && !includeTournament) continue;
@@ -663,7 +684,10 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, conte
     allWarnings.unknown.push(...unknown);
     const unmetCount = (conditionalOff || []).length;
     // 「効果条件を満たせないフラグは選ばない」: 未達の条件付き効果を持つ候補を除外する
-    if (avoidUnmetCond && unmetCount > 0) continue;
+    if (avoidUnmetCond && unmetCount > 0) {
+      if (excludedOut) excludedOut.add(String(frag.id));
+      continue;
+    }
     // 全発動の気持ちよさ優先: 未達の条件行1つにつき有効効果を unmetPenalty 倍に減点して評価する。
     // 明確に強いフラグは残り、僅差なら全発動のフラグが選ばれる（既定 0.95、実ステには影響しない選定用の重みダウン）
     const penalty = unmetCount > 0 && unmetPenalty != null && unmetPenalty < 1
@@ -686,6 +710,31 @@ function prepareItems(candidates, counts, effectMap, weightedStats, stars, conte
     });
   }
   return items;
+}
+
+/**
+ * 同じキャラが複数チームに出る場合（§47）、出撃ごとの候補を1つに束ねる。
+ * 各フラグの寄与ベクトルを出撃の数だけ横に連結する（出撃ごとに条件の達成が違うため値も違う）。
+ * 採点側の ctx.stats も同じ順で連結するので、scoreOf がそのまま「全出撃の合計」になる。
+ * ある出撃で無関係なフラグはその区間が0。excluded（効果条件未達で除外指定）に入ったものは
+ * どの出撃でも使わない — フラグは戦ごとに付け替えられないので、1戦でも未達なら除外が正しい。
+ */
+function mergeAppearanceItems(parts, n, excluded) {
+  const k = parts.length;
+  const byId = new Map();
+  parts.forEach((items, a) => {
+    for (const it of items) {
+      if (excluded && excluded.has(it.id)) continue;
+      let m = byId.get(it.id);
+      if (!m) {
+        m = { ...it, base: new Float64Array(n * k), nonBase: new Float64Array(n * k) };
+        byId.set(it.id, m);
+      }
+      m.base.set(it.base, a * n);
+      m.nonBase.set(it.nonBase, a * n);
+    }
+  });
+  return [...byId.values()];
 }
 
 /** 覚醒前後の同一種は同じキャラに同時装備できない（species 同一かつ覚醒フラグが異なる） */
@@ -846,10 +895,31 @@ export function optimizeParty(p) {
   // 未指定のキャラは p.weights を使う。キャラ間で ❸ の桁が異なるため、
   // weightsById 指定時の奪い合い裁定は ❸₀ で正規化してから合算する（後述・§17）
   const weightsAllFor = (cid) => (p.weightsById && p.weightsById[cid]) || p.weights;
-  const ext = partyAbilityCorrections({
-    members: p.members, battleIds: p.battleIds, teams: p.teams,
-    effectMap: p.effectMap, leaderId: p.leaderId, leaders: p.leaders,
-  });
+  // プラウドはチーム別に補正を持つ。同じキャラが複数チームに出る（3戦目の再選出 — §47）と
+  // 補正も効果条件の文脈もチームごとに違うが、フラグは戦ごとに付け替えられないので1組で全戦を戦う
+  const teamsArr = Array.isArray(p.teams) && p.teams.length > 0 ? p.teams : null;
+  const extByTeam = teamsArr
+    ? partyAbilityCorrectionsByTeam({ members: p.members, teams: teamsArr, effectMap: p.effectMap, leaders: p.leaders })
+    : null;
+  const ext = extByTeam
+    ? mergeFirstAppearance(Object.fromEntries(p.members.map((m) => [String(m.character.id), undefined])), extByTeam)
+    : partyAbilityCorrections({
+        members: p.members, battleIds: p.battleIds,
+        effectMap: p.effectMap, leaderId: p.leaderId,
+      });
+  for (const k of Object.keys(ext)) if (ext[k] === undefined) delete ext[k];
+  /** このキャラの出撃一覧（チームごとの補正と効果条件の文脈）。スタンダードは常に1件 */
+  const appearancesOf = (cid) => {
+    const fallback = [{ ext: ext[cid], context: p.contexts ? p.contexts[cid] : undefined, team: null }];
+    if (!extByTeam) return fallback;
+    const list = [];
+    teamsArr.forEach((ids, t) => {
+      if (!(ids || []).some((x) => String(x) === cid)) return;
+      const context = p.contextsByTeam?.[t]?.[cid] ?? (p.contexts ? p.contexts[cid] : undefined);
+      list.push({ ext: extByTeam[t][cid], context, team: t });
+    });
+    return list.length ? list : fallback;
+  };
   for (const id of Object.keys(ext)) {
     warnings.messages.push(...ext[id].warnings);
     warnings.unknown.push(...(ext[id].unknown || []).map((u) => ({ fragmentId: '', fragmentName: 'アビリティ', reason: u, raw: null })));
@@ -873,18 +943,23 @@ export function optimizeParty(p) {
     const wAll = weightsAllFor(cid);
     const wStats = ALL_STATS.filter((s) => (wAll[s] || 0) > 0);
     const w = Object.fromEntries(wStats.map((s) => [s, wAll[s]]));
-    const ctx = wStats.length ? makeScoreContext(member, ext[cid], w, wStats, warnings) : null;
-    if (!ctx) return { cid, member, ctx: null, items: [], slots: 0 };
+    const apps = appearancesOf(cid);
+    // 出撃が複数なら採点文脈を横に連結する（scoreOf が全出撃の合計になる — mergeAppearanceItems 参照）
+    const ctxs = wStats.length ? apps.map((a) => makeScoreContext(member, a.ext, w, wStats, warnings)) : [];
+    const ctx = ctxs.length === 0 || ctxs.some((c) => !c) ? null
+      : ctxs.length === 1 ? ctxs[0] : { stats: ctxs.flatMap((c) => c.stats) };
+    if (!ctx) return { cid, member, ctx: null, items: [], slots: 0, appearances: apps.length };
     let items = p.itemsCache && p.itemsCache[cid];
     if (!items) {
       const candidates = equippableFragments(member.character, p.fragmentsById);
       const stars = member.my?.stars ?? 7;
-      const context = p.contexts ? p.contexts[cid] : undefined;
-      items = prepareItems(candidates, p.counts, p.effectMap, wStats, stars, context, p.includeTournament === true, warnings, p.avoidUnmetCond === true, p.unmetPenalty);
+      const excluded = new Set();
+      const parts = apps.map((a) => prepareItems(candidates, p.counts, p.effectMap, wStats, stars, a.context, p.includeTournament === true, warnings, p.avoidUnmetCond === true, p.unmetPenalty, excluded));
+      items = parts.length === 1 ? parts[0] : mergeAppearanceItems(parts, wStats.length, excluded);
       if (p.itemsCache) p.itemsCache[cid] = items;
     }
     const slots = Number(member.my && member.my.equip_slots) || 3;
-    return { cid, member, ctx, items, slots };
+    return { cid, member, ctx, items, slots, appearances: apps.length };
   });
 
   // 奪い合いの有無を判定: あるフラグメントを使い得るキャラ数が所持数を超えるものがあるか。
@@ -894,7 +969,8 @@ export function optimizeParty(p) {
     for (const item of pc.items) usableBy[item.id] = (usableBy[item.id] || 0) + 1;
   }
   const contended = Object.entries(usableBy).some(([fid, n]) => n > (Number(p.counts[fid]) || 0));
-  if (!contended) {
+  // キャラごとに独立で最良を取る（奪い合いを無視した解）
+  const solveIndependent = () => {
     const assignments = {};
     let totalScore = 0;
     let anyTruncated = false;
@@ -908,17 +984,31 @@ export function optimizeParty(p) {
       assignments[pc.cid] = { ids: best.ids, score: best.score };
       totalScore += best.score;
     }
-    if (anyTruncated) {
+    return { assignments, totalScore, anyTruncated };
+  };
+  const independentResult = (ind) => {
+    if (ind.anyTruncated) {
       warnings.messages.push('候補が多いキャラは単体スコア上位に絞って探索しました（厳密解でない可能性があります）');
     }
-    return { assignments, totalScore, exact: !anyTruncated, contended: false, ext, warnings: warnings.messages, unknown: warnings.unknown };
+    return { assignments: ind.assignments, totalScore: ind.totalScore, exact: !ind.anyTruncated, contended: false, ext, extByTeam, warnings: warnings.messages, unknown: warnings.unknown };
+  };
+  if (!contended) return independentResult(solveIndependent());
+  // 奪い合いが「起こりうる」だけなら、まず独立解を作って所持数に収まるか確かめる。
+  // 収まればそれが制約付きでも最良（制約を外した最適が制約を満たしている）なので厳密解。
+  // プラウド3戦（7〜9体）では「誰でも装備できるフラグ」が所持6枚を超えて“使える”だけで
+  // 重い分枝限定に入っていたが、実データでは最良割当が6枚を超えることはまず無い（§47）
+  {
+    const ind = solveIndependent();
+    const demand = {};
+    for (const a of Object.values(ind.assignments)) for (const id of a.ids) demand[id] = (demand[id] || 0) + 1;
+    if (Object.entries(demand).every(([id, n]) => n <= (Number(p.counts[id]) || 0))) return independentResult(ind);
   }
 
   // 奪い合いあり（所持数を減らしている場合）→ 組合せ列挙＋分枝限定法
   const perChar = [];
   for (const pc of prepared) {
     if (!pc.ctx) {
-      perChar.push({ cid: pc.cid, member: pc.member, combos: [{ ids: [], score: 0 }] });
+      perChar.push({ cid: pc.cid, member: pc.member, combos: [{ ids: [], score: 0 }], appearances: pc.appearances });
       continue;
     }
     const { combos, truncated } = enumerateCombos(pc.items, pc.slots, pc.ctx, maxCombos);
@@ -928,7 +1018,7 @@ export function optimizeParty(p) {
         `${pc.member.character.name || pc.cid} の装備組合せが多すぎるため上位 ${maxCombos} 通りに絞りました（厳密解でない可能性があります）`
       );
     }
-    perChar.push({ cid: pc.cid, member: pc.member, combos, ctx: pc.ctx });
+    perChar.push({ cid: pc.cid, member: pc.member, combos, ctx: pc.ctx, appearances: pc.appearances });
   }
 
   // キャラ別重み（weightsById）併用時の奪い合い裁定は、キャラ間で ❸ の桁が異なる
@@ -941,7 +1031,9 @@ export function optimizeParty(p) {
       if (!pc.ctx) continue;
       const n = pc.ctx.stats.length;
       const base0 = scoreOf(pc.ctx, new Float64Array(n), new Float64Array(n));
-      if (base0 > 0) for (const cmb of pc.combos) cmb.score /= base0;
+      // 正規化すると出撃回数が打ち消されるので掛け戻す（2戦に出るキャラの伸びは2戦ぶん効く — §47）
+      const times = pc.appearances > 1 ? pc.appearances : 1;
+      if (base0 > 0) for (const cmb of pc.combos) cmb.score = cmb.score / base0 * times;
     }
   }
   // エース優遇（§46）: 取り合いになったフラグメントをエースに回す。
@@ -1023,7 +1115,7 @@ export function optimizeParty(p) {
     const combo = bestPick[i] || { ids: [], score: 0 };
     assignments[pc.cid] = { ids: combo.ids, score: combo.score };
   });
-  return { assignments, totalScore: bestScore, exact, contended: true, ext, warnings: warnings.messages, unknown: warnings.unknown };
+  return { assignments, totalScore: bestScore, exact, contended: true, ext, extByTeam, warnings: warnings.messages, unknown: warnings.unknown };
 }
 
 /**
