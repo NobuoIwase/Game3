@@ -46,8 +46,19 @@ const skillPair = (s) => [s.kind, s.level];
 const translated = (t, key) => (t[key] && t[key] !== key ? t[key] : null);
 const stripGradeDigit = (n) => n.replace(/[０-９0-9]+$/, '');
 
+// シリーズ → モンスターのアイコンURL（SERIES_GREAT_JAGRAS → greatjagras のように対応）
+function monsterIcons(props) {
+  const out = {};
+  for (const s of Object.keys(props.series || {})) {
+    const m = (props.monsters || {})[s.replace('SERIES_', '').replace(/_/g, '').toLowerCase()];
+    if (m && m.fieldIconUrl) out[s] = m.fieldIconUrl;
+  }
+  return out;
+}
+
 export function buildWeapons(props) {
   const t = props.guideTranslations;
+  const mon = monsterIcons(props);
   const list = [];
   for (const w of Object.values(props.weapons)) {
     if (w.enabled === false) continue;
@@ -73,6 +84,9 @@ export function buildWeapons(props) {
       series: t[`SERIES_NAME_${w.seriesId}`] || w.series,
       sort: Number(w.sortOrder) || 0,
       style: !!(w.customizationSpec && w.customizationSpec.customizable),
+      // 画像はリポジトリに含めず、公式サイトのURLを表示時に参照する
+      img: (w.grades[w.grades.length - 1] || {}).imageUrl || null,
+      mon: mon[w.series] || null,
       grades,
     });
   }
@@ -84,6 +98,7 @@ const PART = { HEAD: 'head', CHEST: 'body', ARMS: 'arm', TORSO: 'waist', WAIST: 
 
 export function buildArmor(props) {
   const t = props.guideTranslations;
+  const mon = monsterIcons(props);
   const list = [];
   for (const a of Object.values(props.armor)) {
     const grades = {};
@@ -102,6 +117,8 @@ export function buildArmor(props) {
       part: PART[a.category] || a.category,
       series: t[`SERIES_NAME_${a.seriesId}`] || a.series,
       seriesId: a.seriesId,
+      img: a.mImageUrl || null,
+      mon: mon[a.series] || null,
       grades,
     });
   }
