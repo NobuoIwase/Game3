@@ -2,7 +2,7 @@
 // 方針: stale-while-revalidate。キャッシュがあれば即返し、裏で更新する。
 // game_data の更新を確実に反映したいときは「データ」タブの「キャッシュを更新」を使う。
 
-const CACHE = 'dbl-frag-opt-v45';
+const CACHE = 'dbl-frag-opt-v46';
 
 const PRECACHE = [
   './',
@@ -16,6 +16,7 @@ const PRECACHE = [
   './js/store.js',
   './js/parser.js',
   './js/party_rules.js',
+  './js/frag_rank.js',
   './game_data/characters.json',
   './game_data/fragments.json',
   './game_data/effect_map.json',

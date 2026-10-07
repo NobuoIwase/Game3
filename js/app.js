@@ -13,6 +13,7 @@ import {
 } from './optimizer.js';
 import * as store from './store.js';
 import { placeChar, stillInParty, proudLeadersOf, sanitizeThird, PROUD_PER_TEAM_MAX } from './party_rules.js';
+import * as FR from './frag_rank.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
 
 // ---------------------------------------------------------------- 状態
@@ -45,7 +46,9 @@ const ui = {
     penalizeUnmetCond: true,
   },
   charFilter: null, // defaultCharFilter() で初期化（boot 時）
-  fragFilter: { q: '', rarity: '', ownedOnly: false, owned: '' }, // owned: '' | 'owned' | 'unowned'（§41）
+  fragFilter: { q: '', rarity: '', ownedOnly: false, owned: '', view: 'list' }, // owned: '' | 'owned' | 'unowned'（§41）/ view: 'list' | 'rec'（§49）
+  // オススメフラグメント（§49）: 評価軸・実戦の想定・並び・絞り込み
+  rec: { axis: 'total', assume: 'full', sort: 'build', exclusive: false, owned: '', q: '', limit: 60, noCond: false },
   calc: {
     stat: 'strike_atk', total: 273617, boost: 42080,
     z: 149, zenkai: 0, ll: 30,
@@ -2664,9 +2667,18 @@ const RARITY_LABELS = {
   awakenedgold: '覚醒ゴールド', awakenedunique: '覚醒ユニーク', rainbow: 'レインボー',
 };
 
+/** フラグタブ上部の「一覧／オススメ」切替（§49） */
+function fragViewSwitch() {
+  const f = ui.fragFilter;
+  return el('div', { class: 'chip-row', style: 'margin-top:6px' },
+    el('button', { class: `chip${f.view !== 'rec' ? ' on' : ''}`, onclick: () => { f.view = 'list'; renderFrags(); } }, '一覧'),
+    el('button', { class: `chip${f.view === 'rec' ? ' on' : ''}`, onclick: () => { f.view = 'rec'; renderFrags(); } }, 'オススメ（強さランキング）'));
+}
+
 function renderFrags() {
   const root = $('#frags-view');
   const f = ui.fragFilter;
+  if (f.view === 'rec') { renderRecommend(root); return; }
   const rarities = [...new Set(Object.values(state.game.fragments).map((x) => x.rarity).filter(Boolean))];
   const grid = el('div', { class: 'frag-grid' });
   const rerenderGrid = () => {
@@ -2689,6 +2701,7 @@ function renderFrags() {
   const zeroCount = () => Object.values(state.game.fragments).filter((x) => fragCount(x.id) === 0).length;
   const countLine = el('p', { class: 'hint' });
   root.replaceChildren(
+    fragViewSwitch(),
     countLine,
     el('div', { class: 'filter-row sticky-bar' },
       el('input', { type: 'search', value: f.q, placeholder: 'フラグメント名で検索', oninput: (e) => { f.q = e.target.value; rerenderGrid(); } }),
@@ -2710,6 +2723,315 @@ function renderFrags() {
       }, `所持0のもの（${zeroCount()}）`)),
     grid);
   rerenderGrid();
+}
+
+// ---------------------------------------------------------------- オススメフラグメント（§49）
+//
+// キャラに依存しない「フラグそのものの強さ」。評価は js/frag_rank.js（純粋関数・テスト済み）。
+// 重い前計算（実戦の想定・プロファイル・ランキング）はゲームデータごとにキャッシュする。
+const recCache = { game: null, all: null, actx: null, rank: new Map() };
+function recBase() {
+  if (recCache.game !== state.game) {
+    recCache.game = state.game;
+    recCache.all = null; recCache.actx = null; recCache.rank = new Map();
+  }
+  if (!recCache.all) {
+    recCache.all = Object.values(state.game.fragments)
+      .map((f) => ({ frag: f, profile: FR.fragmentProfile(f, state.game.effectMap) }))
+      .filter((e) => FR.isStatFragment(e.frag, e.profile));
+  }
+  if (!recCache.actx) recCache.actx = FR.abilityContextFromData(state.game.characters, state.game.effectMap);
+  return recCache;
+}
+const REC_ASSUME = {
+  battle: { label: 'バトル3体だけ', note: 'ゼンカイ枠なし（自身＋他2体のZ・ZENKAIアビ）' },
+  full: { label: '育成済み（標準）', note: 'ゼンカイ枠まで（自身＋他5体のZ・ZENKAIアビ）' },
+  high: { label: '上位', note: 'ゼンカイ枠までで補正が大きい側（上位25%）' },
+};
+function recAbilityPct(assume) {
+  const a = recBase().actx;
+  return { battle: a.battle, full: a.full, high: a.high }[assume] ?? a.full;
+}
+function recRanking(axis = ui.rec.axis, assume = ui.rec.assume, exclusive = ui.rec.exclusive, noCond = ui.rec.noCond) {
+  const { all, actx } = recBase();
+  const key = JSON.stringify([axis, assume, exclusive, noCond]);
+  if (!recCache.rank.has(key)) {
+    const general = all.filter((e) => !FR.isExclusive(e.frag));
+    recCache.rank.set(key, FR.rankFragments(exclusive ? all : general, {
+      axis, abilityPct: recAbilityPct(assume), boostRatio: actx.boostRatio, partnerEntries: general, noCond,
+    }));
+  }
+  return recCache.rank.get(key);
+}
+const SHORT_STAT = { hp: '体力', strike_atk: '打撃攻', blast_atk: '射撃攻', strike_def: '打撃防', blast_def: '射撃防' };
+/** 基礎あり・基礎なしの内訳（評価に使った最大値・選択肢） */
+function recBreakdown(v) {
+  const part = (o) => FR.MAIN_STATS.filter((st) => o[st] > 0).map((st) => `${SHORT_STAT[st]}+${fmt(o[st], 1)}`).join(' ');
+  const b = part(v.base || {}), n = part(v.nonBase || {});
+  return [b ? `基礎あり ${b}` : '', n ? `基礎なし ${n}` : ''].filter(Boolean).join(' ｜ ') || '（この軸に効く効果なし）';
+}
+/** 選択式スロットの「狙う選択肢」 */
+function recChoiceText(profile, choice) {
+  return profile.slots.map((s, i) => {
+    if (s.options.length < 2) return null;
+    const o = s.options[choice?.[i] ?? 0];
+    return `${s.label}: ${o.lines.slice(s.fixedCount || 0).map((l) => l.text).join('・')}`;
+  }).filter(Boolean).join(' ／ ');
+}
+function recTag(text, kind = '') {
+  return el('span', { class: `rec-tag${kind ? ` ${kind}` : ''}` }, text);
+}
+/** 1件ぶんのタグ（向き・目減り・化ける・条件・専用・装備数・未所持） */
+function recTags(row) {
+  const f = row.frag, p = row.profile;
+  const totalChars = Object.keys(state.game.characters).length;
+  const loss = Math.round((1 - row.retain) * 100);
+  return [
+    row.build.side ? recTag(row.build.side === 'strike' ? '打撃向け' : '射撃向け') : null,
+    recTag(`実戦で目減り −${loss}%`, loss <= 20 ? 'good' : loss >= 50 ? 'dim' : ''),
+    row.jump >= 50 && row.buildRank <= 200 ? recTag(`化ける ↑${row.jump}位`, 'hot') : null,
+    p.conditional ? recTag(ui.rec.noCond ? '条件つき効果は除外' : '条件達成時', 'warn') : null,
+    p.star7 ? recTag('★7で全解放', 'warn') : null,
+    FR.isExclusive(f) ? recTag('専用') : recTag(`装備${FR.equipCount(f, totalChars) >= totalChars ? '全キャラ' : `${FR.equipCount(f, totalChars)}体`}`),
+    fragCount(f.id) === 0 ? recTag('未所持', 'dim') : null,
+  ];
+}
+
+function renderRecommend(root) {
+  const r = ui.rec;
+  const t0 = performance.now();
+  const { actx } = recBase();
+  const res = recRanking();
+  const q = r.q.trim();
+  let rows = res.rows
+    .filter((x) => !q || (x.frag.name || '').includes(q))
+    .filter((x) => r.owned === '' || (r.owned === 'owned') === (fragCount(x.frag.id) > 0));
+  if (r.sort === 'solo') rows = [...rows].sort((a, b) => a.soloRank - b.soloRank);
+  else if (r.sort === 'jump') rows = rows.filter((x) => x.buildRank <= 200).sort((a, b) => b.jump - a.jump || a.buildRank - b.buildRank);
+  else if (r.sort === 'new') {
+    const gen = (x) => Number(fragSpeciesOf(x.frag)) || 0;
+    rows = [...rows].sort((a, b) => gen(b) - gen(a) || a.buildRank - b.buildRank);
+  }
+  const shown = rows.slice(0, r.limit);
+  const chip = (on, label, onclick) => el('button', { class: `chip${on ? ' on' : ''}`, onclick }, label);
+  const set = (k, v) => () => { r[k] = v; r.limit = 60; renderFrags(); };
+  const partnerLine = Object.entries(res.partners).map(([a, pp]) =>
+    `${FR.AXES[a].label}: ${recBreakdown(pp)}`).join(' ／ ');
+
+  const rowEl = (x) => el('div', { class: 'rec-row', onclick: () => openFragSheet(String(x.frag.id), { fromRec: true }) },
+    el('div', { class: 'rec-icon' }, fragTile(x.frag, {})),
+    el('div', { class: 'rec-body' },
+      el('div', { class: 'rec-name' }, x.frag.name,
+        el('span', { class: 'small-note' }, ` ${RARITY_LABELS[x.frag.rarity] || x.frag.rarity} / No.${x.frag.id}`)),
+      el('div', { class: 'rec-scores' },
+        el('span', { class: 'rec-rank' }, `${x.buildRank}位`),
+        el('span', { class: 'rec-build' }, `実戦 +${fmt(x.build.score, 1)}%`),
+        el('span', { class: 'rec-solo' }, `単体 +${fmt(x.solo.score, 1)}%（${x.soloRank}位）`)),
+      el('div', { class: 'rec-tags' }, recTags(x)),
+      el('div', { class: 'small-note' }, recBreakdown(x.build)),
+      recChoiceText(x.profile, x.build.choice)
+        ? el('div', { class: 'small-note', style: 'color:var(--accent);font-weight:700' }, `狙う選択肢 ${recChoiceText(x.profile, x.build.choice)}`)
+        : null));
+
+  root.replaceChildren(...nodes(
+    fragViewSwitch(),
+    el('div', { class: 'card sub-card' },
+      el('h3', {}, 'オススメフラグメント'),
+      el('p', { class: 'small-note' },
+        'キャラに関係なく「フラグそのものの強さ」を比べます。数値は最終ステ（❸）の伸び率で、値は最大・その軸で最良の選択肢（厳選の目標）です。'
+        + 'タップすると厳選チェッカー（実際の個体の評価）と、相性の良いフラグが見られます。'),
+      el('details', {},
+        el('summary', {}, '「実戦」と「単体」、「化ける」の意味'),
+        el('p', { class: 'small-note' },
+          `単体 … 素の状態のキャラにこのフラグ1枚だけを付けたときの伸び。`),
+        el('p', { class: 'small-note' },
+          `実戦 … 育成済みのキャラ（Z・ZENKAIアビの基礎あり補正 +${recAbilityPct(r.assume)}%。最新${actx.sample}体の実データから）に、`
+          + '同じ軸の上位フラグ2枚と一緒に付けたときの伸び。'),
+        el('p', { class: 'small-note' },
+          '基礎ありは ❷（アビリティ・ZENKAI・他のフラグの基礎あり）に足されるだけなので、育つほど目減りします。'
+          + '基礎なしは最後に全体へ掛かるので目減りしません。単体では下位でも、実戦で大きく順位を上げるものに「化ける」を付けています。'),
+        el('p', { class: 'small-note' }, `実戦の想定（他のフラグ2枚）… ${partnerLine}`),
+        el('p', { class: 'small-note' },
+          '条件つきの効果は条件達成時（「1人につき」はバトル3体ぶん）で計算します。入手先（超次元共闘など）は参照サイトにデータが無いため絞り込めません。'))),
+    el('div', { class: 'chip-row' }, Object.entries(FR.AXES).map(([k, a]) => chip(r.axis === k, a.label, set('axis', k)))),
+    el('p', { class: 'small-note', style: 'margin:2px 0 4px' }, FR.AXES[r.axis].note),
+    el('div', { class: 'chip-row' },
+      el('span', { class: 'small-note', style: 'align-self:center' }, '実戦の想定:'),
+      Object.entries(REC_ASSUME).map(([k, a]) => chip(r.assume === k, `${a.label} +${recAbilityPct(k)}%`, set('assume', k)))),
+    el('div', { class: 'chip-row' },
+      el('span', { class: 'small-note', style: 'align-self:center' }, '並び:'),
+      chip(r.sort === 'build', '実戦の強さ', set('sort', 'build')),
+      chip(r.sort === 'solo', '単体の強さ', set('sort', 'solo')),
+      chip(r.sort === 'jump', '化ける順', set('sort', 'jump')),
+      chip(r.sort === 'new', '新しい順', set('sort', 'new'))),
+    el('div', { class: 'filter-row sticky-bar' },
+      el('input', { type: 'search', value: r.q, placeholder: 'フラグメント名で検索', oninput: (e) => { r.q = e.target.value; r.limit = 60; renderFrags(); } })),
+    el('div', { class: 'chip-row' },
+      chip(r.owned === 'owned', '所持しているもの', set('owned', r.owned === 'owned' ? '' : 'owned')),
+      chip(r.owned === 'unowned', '未所持のもの', set('owned', r.owned === 'unowned' ? '' : 'unowned')),
+      chip(r.exclusive, '専用フラグも含める', set('exclusive', !r.exclusive)),
+      chip(r.noCond, '条件つきの効果を数えない', set('noCond', !r.noCond))),
+    el('p', { class: 'hint' }, `${rows.length} 件（${fmt(performance.now() - t0, 0)}ms）`
+      + (r.sort === 'jump' ? '。化ける順は実戦200位以内から' : '')),
+    el('div', { class: 'rec-list' }, shown.map(rowEl)),
+    rows.length > shown.length
+      ? el('button', { class: 'btn secondary', onclick: () => { r.limit += 60; renderFrags(); } }, `もっと見る（残り ${rows.length - shown.length} 件）`)
+      : null));
+}
+/** フラグの「種」（覚醒版はベース版と同じ。新しい順の世代として使う） */
+function fragSpeciesOf(f) {
+  const m = String(f?.icon || '').match(/EqIco_(\d+)\./);
+  return m ? m[1] : String(f?.id ?? '');
+}
+
+/**
+ * フラグ詳細シートの「オススメ評価・厳選チェッカー・相性」（§49）。
+ * 厳選チェッカー: 実際の個体（選択肢と値）を入れると、参照サイトと同じ装備ランクと、
+ * 実戦での評価（最大個体比・相当順位）を出す。どのスロットで粘るべきかも出す。
+ */
+function recommendSection(f, open) {
+  const { all, actx } = recBase();
+  const ent = all.find((e) => String(e.frag.id) === String(f.id));
+  if (!ent) return null;
+  const axis = ui.rec.axis;
+  const res = recRanking(axis, ui.rec.assume, ui.rec.exclusive || FR.isExclusive(f), ui.rec.noCond);
+  const row = res.rows.find((x) => String(x.frag.id) === String(f.id));
+  if (!row) return null;
+  const side = row.build.axis || axis;
+  const ctx = res.buildCtxs[side];
+  const best = FR.evaluateSet([ent.profile], ctx, side);
+  const rolls = FR.maxRoll(ent.profile, best.choice);
+  const out = el('div', {});
+  const rankOf = (score) => res.rows.filter((x) => x.build.score > score + 1e-9).length + 1;
+
+  // 軸ごとの評価（スコアのみ。順位は選択中の軸）
+  const axisTable = el('div', { class: 'rec-axis-table' }, Object.entries(FR.AXES).map(([k, a]) => {
+    const sides = k === 'total' ? ['strike_total', 'blast_total'] : [k];
+    let v = 0;
+    for (const sd of sides) {
+      const rr = recRanking(sd, ui.rec.assume, ui.rec.exclusive || FR.isExclusive(f), ui.rec.noCond);
+      const xr = rr.rows.find((x) => String(x.frag.id) === String(f.id));
+      if (xr && xr.build.score > v) v = xr.build.score;
+    }
+    return el('div', { class: `rec-axis${k === axis ? ' on' : ''}` },
+      el('div', { class: 'small-note' }, a.label), el('b', {}, `+${fmt(v, 1)}%`));
+  }));
+
+  const result = el('div', { class: 'rec-check-result' });
+  const recompute = () => {
+    const rk = FR.equipRank(ent.profile, rolls);
+    const v = FR.evaluateSet([ent.profile], ctx, side, [rolls]).score;
+    const pct = best.score > 0 ? v / best.score * 100 : 0;
+    result.replaceChildren(
+      el('div', { class: 'rec-rankbadge' }, el('span', { class: `eqrank r-${rk.rank.replace('+', 'p')}` }, rk.rank), ` スコア ${fmt(rk.score, 1)}`),
+      el('div', {}, `実戦（${FR.AXES[side].label}）: +${fmt(v, 1)}%（最大個体の ${fmt(pct, 0)}%）`),
+      el('div', {}, `この個体は実戦ランキングで ${rankOf(v)}位相当`,
+        el('span', { class: 'small-note' }, `（最大値なら ${row.buildRank}位）`)),
+      el('p', { class: 'small-note' }, '装備ランクは全スロットを同じ重みで見ますが、実戦の強さはスロットごとに効き方が違います。'
+        + 'ランクが低くても、効くスロットが高ければ実戦では十分なことがあります。'));
+  };
+  const slotDraws = [];
+  const slotBoxes = ent.profile.slots.map((s, si) => {
+    const box = el('div', { class: 'rec-slot' });
+    const draw = () => {
+      const r0 = rolls[si];
+      const opt = s.options[r0.opt] || s.options[0];
+      box.replaceChildren(
+        el('div', { class: 'rec-slot-head' }, el('b', {}, s.label), s.star7 ? el('span', { class: 'small-note' }, '（★7で解放）') : null,
+          s.options.length > 1
+            ? el('select', {
+                style: 'width:auto;display:inline-block;margin:0 0 0 6px;padding:1px 4px;font-size:12px',
+                onchange: (e) => {
+                  const oi = Number(e.target.value);
+                  rolls[si] = { opt: oi, vals: s.options[oi].lines.map((l) => l.max) };
+                  draw(); recompute();
+                },
+              }, s.options.map((o, oi) => el('option', { value: String(oi), selected: oi === r0.opt },
+                `選択${oi + 1}: ${o.lines.slice(s.fixedCount || 0).map((l) => l.text).join('・') || '（説明文）'}`)))
+            : null),
+        ...opt.lines.map((ln, li) => {
+          const fixed = ln.min === ln.max;
+          const label = el('span', { class: 'small-note' }, `${ln.text} ${fmt(ln.min, 2)}〜${fmt(ln.max, 2)}%${ln.cond ? '（条件）' : ''}`);
+          if (fixed) return el('div', { class: 'rec-line' }, label, el('span', {}, ` 固定 ${fmt(ln.max, 2)}%`));
+          const num = el('input', {
+            type: 'number', min: String(ln.min), max: String(ln.max), step: '0.01', value: String(r0.vals[li]),
+            style: 'width:80px;display:inline-block;margin:0 0 0 6px;padding:2px 4px',
+            oninput: (e) => {
+              const val = Math.min(ln.max, Math.max(ln.min, Number(e.target.value)));
+              if (Number.isFinite(val)) { rolls[si].vals[li] = val; range.value = String(val); recompute(); }
+            },
+          });
+          const range = el('input', {
+            type: 'range', min: String(ln.min), max: String(ln.max), step: '0.05', value: String(r0.vals[li]),
+            style: 'width:100%;margin:2px 0',
+            oninput: (e) => { const val = Number(e.target.value); rolls[si].vals[li] = val; num.value = String(val); recompute(); },
+          });
+          return el('div', { class: 'rec-line' }, label, num, range);
+        }));
+    };
+    slotDraws.push(draw);
+    draw();
+    return box;
+  });
+  // 全スロットの値をまとめて最大・中間・最小に（選択肢はそのまま）
+  const setAll = (kind) => {
+    ent.profile.slots.forEach((s, si) => {
+      const o = s.options[rolls[si].opt] || s.options[0];
+      rolls[si].vals = o.lines.map((l) => (kind === 'max' ? l.max : kind === 'min' ? l.min : (l.min + l.max) / 2));
+    });
+    slotDraws.forEach((d) => d());
+    recompute();
+  };
+  const slotsWrap = el('div', {}, slotBoxes);
+
+  const imp = FR.slotImportance(ent.profile, ctx, side);
+  const impList = imp.filter((x) => x.minLoss > 0.05 || x.worstOptLoss > 0.05);
+  const keySlot = [...imp].sort((a, b) => Math.max(b.minLoss, b.worstOptLoss) - Math.max(a.minLoss, a.worstOptLoss))[0];
+
+  const partners = FR.bestPartners(ent, res.rows.map((x) => ({ frag: x.frag, profile: x.profile })), {
+    axis: side, abilityPct: recAbilityPct(ui.rec.assume), boostRatio: actx.boostRatio, partner: res.partners[side], top: 5,
+    noCond: ui.rec.noCond,
+  });
+
+  out.append(...nodes(
+    el('div', { class: 'rec-scores', style: 'margin:4px 0' },
+      el('span', { class: 'rec-rank' }, `${row.buildRank}位`),
+      el('span', { class: 'rec-build' }, `実戦 +${fmt(row.build.score, 1)}%`),
+      el('span', { class: 'rec-solo' }, `単体 +${fmt(row.solo.score, 1)}%（${row.soloRank}位）`)),
+    el('div', { class: 'rec-tags' }, recTags(row)),
+    el('div', { class: 'small-note' }, `評価軸: ${FR.AXES[axis].label}（オススメ画面で切替）／ ${recBreakdown(row.build)}`),
+    axisTable,
+    el('h3', {}, '厳選チェッカー'),
+    el('p', { class: 'small-note' }, '手に入れた個体の選択肢と値を入れてください（初期値は最大値・最良の選択肢）。'),
+    el('div', { class: 'row', style: 'gap:6px;margin-bottom:6px' },
+      el('button', { class: 'btn secondary small', onclick: () => setAll('max') }, '全部最大'),
+      el('button', { class: 'btn secondary small', onclick: () => setAll('mid') }, '全部中間'),
+      el('button', { class: 'btn secondary small', onclick: () => setAll('min') }, '全部最小')),
+    slotsWrap,
+    result,
+    impList.length
+      ? el('div', { class: 'card sub-card', style: 'margin-top:6px' },
+          el('h3', {}, '粘るべきスロット'),
+          impList.map((x) => el('div', { class: 'effline' },
+            el('b', {}, x.label), ' ',
+            `値が最小だと −${fmt(x.minLoss, 1)}%`,
+            x.bestOpt != null ? `、外れの選択肢だと −${fmt(x.worstOptLoss, 1)}%（狙い: 選択${x.bestOpt + 1}）` : '')),
+          keySlot && Math.max(keySlot.minLoss, keySlot.worstOptLoss) > 0
+            ? el('p', { class: 'small-note' }, `${keySlot.label} の出来が実戦の強さを一番左右します。ほかのスロットは妥協しても影響が小さめです。`)
+            : null)
+      : el('p', { class: 'small-note' }, 'このフラグは値が固定のため、厳選の必要はありません。'),
+    partners.length
+      ? el('div', { class: 'card sub-card', style: 'margin-top:6px' },
+          el('h3', {}, '相性の良いフラグ（一緒に付ける相手）'),
+          el('p', { class: 'small-note' }, '同じキャラに付けられる組み合わせのうち、2枚一緒に付けたときの伸びが大きい順（実戦の想定の上）。'),
+          partners.map((pp) => el('div', { class: 'effline', style: 'cursor:pointer', onclick: () => openFragSheet(String(pp.frag.id), { fromRec: true }) },
+            el('b', {}, `+${fmt(pp.pair, 1)}%`), ` ${pp.frag.name}`,
+            el('span', { class: 'small-note' }, `（このフラグ +${fmt(pp.alone, 1)} ＋ 相手 +${fmt(pp.other, 1)}${pp.synergy > 0.05 ? ` ＋ 掛け算ぶん +${fmt(pp.synergy, 1)}` : ''}）`))))
+      : null));
+  recompute();
+  return el('details', open ? { open: true } : {},
+    el('summary', {}, 'オススメ評価・厳選チェッカー'),
+    out);
 }
 
 /**
@@ -2868,6 +3190,11 @@ function openFragSheet(fid, opts = {}) {
       ? el('div', {}, fragSlotEffectsView(f, 7))
       : el('div', {}, (f.effects || []).map((e2) => el('div', { class: 'effline' },
           e2.text ? `${e2.text} +${e2.value}%` : `${e2.base ? '基礎' : ''}${STAT_LABELS[e2.stat] || e2.stat} +${e2.value}%`))),
+    // オススメ評価・厳選チェッカー・相性（§49）。オススメ画面から開いたときは最初から開く
+    (() => {
+      try { return recommendSection(f, opts.fromRec === true); }
+      catch (e) { console.warn('オススメ評価の計算に失敗:', e); return null; }
+    })(),
     (f.equip_char_ids || []).length
       ? el('details', {},
           el('summary', {}, `装備可能キャラ ${f.equip_char_ids.length} 体`),

@@ -474,3 +474,49 @@ hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 }
 /* 所持マークが重ならないように、アビリティ行を出す時だけ上へ逃がす */
 .char-tile.has-ab .owned-mark { bottom: calc(24% + 12px); }
+
+/* ============ オススメフラグメント（§49） ============ */
+.rec-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.rec-row {
+  display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px;
+}
+.rec-icon { width: 54px; flex: none; }
+.rec-body { min-width: 0; flex: 1; }
+.rec-name { font-weight: 800; line-height: 1.3; word-break: break-all; }
+.rec-scores { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.rec-rank {
+  background: var(--dark); color: #fff; font-weight: 900; font-size: 12px;
+  border-radius: 4px; padding: 0 6px; transform: skewX(-8deg);
+}
+.rec-build { color: var(--good); font-weight: 900; font-size: 16px; }
+.rec-solo { color: var(--muted); font-size: 12px; }
+.rec-tags { display: flex; flex-wrap: wrap; gap: 3px; margin: 2px 0; }
+.rec-tag {
+  font-size: 10px; font-weight: 700; border-radius: 4px; padding: 0 5px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+}
+.rec-tag.good { background: #e3f6ea; color: #137a3a; border-color: #9fd9b5; }
+.rec-tag.hot { background: #fff1dc; color: #b75b00; border-color: #f7b766; }
+.rec-tag.warn { background: #fff7d6; color: var(--warn); border-color: #ead27a; }
+.rec-tag.dim { color: var(--muted); }
+.rec-axis-table { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 6px 0; }
+.rec-axis { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; text-align: center; }
+.rec-axis.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.rec-slot { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; margin-bottom: 4px; }
+.rec-slot-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.rec-slot-head select { max-width: 100%; }
+.rec-line { margin-top: 2px; }
+.rec-check-result {
+  background: var(--dark); color: #fff; border-radius: 8px; padding: 8px 10px; margin-top: 6px;
+}
+.rec-check-result .small-note { color: #c9ccd3; }
+.rec-rankbadge { font-weight: 800; margin-bottom: 2px; }
+.eqrank {
+  display: inline-block; min-width: 34px; text-align: center; font-weight: 900; border-radius: 5px;
+  padding: 0 6px; color: #fff; background: #7a8194;
+}
+/* 参照サイトのランク色に合わせる */
+.eqrank.r-E { background: #7e9b6f; } .eqrank.r-D { background: #6f9b97; } .eqrank.r-C { background: #6f86c0; }
+.eqrank.r-B { background: #6ea8fe; } .eqrank.r-A { background: #9b7fe0; } .eqrank.r-S { background: #e0b15a; }
+.eqrank.r-Z { background: #ff9d6e; } .eqrank.r-Zp { background: #ff7ab0; } .eqrank.r-Godly { background: #ffd34d; color: #3a2a00; }
