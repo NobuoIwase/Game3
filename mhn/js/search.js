@@ -291,10 +291,10 @@ export function searchBuilds(weapons, partOptions, opts) {
     let combos = parts.reduce((x, p) => x * p.cand.length, 1);
     if (combos > budget) {
       approximated = true;
-      const score = (lv, free, owned) => {
-        const r = fillDrifts(lv, free, owned, ev, evOpt, freeIdx, reqArr, false);
-        return r.unmet > 0 ? r.value - 1e6 * r.unmet : r.value;
-      };
+      // 候補選びの評価では必須スキルの不足ペナルティを入れない
+      // （入れると評価がペナルティの大小だけで決まり、強い防具が落ちる。必須スキルは c) で確保する）
+      const noReq = kinds.map(() => 0);
+      const score = (lv, free, owned) => fillDrifts(lv, free, owned, ev, evOpt, freeIdx, noReq, false).value;
       const ownedOf = (c) => (c.owned ? [{ ...c.owned, id: c.o.id }] : []);
       // 部位ごとの「各スキル最大値」ベクトルと最大錬成枠
       const maxVec = parts.map((p) => {
