@@ -324,12 +324,8 @@ export function searchBuilds(weapons, partOptions, opts) {
           c.ctxScore = score(inCtx, ctxFree + c.free, ownedOf(c));
         }
       });
-      const rankLists = parts.map((p) => {
-        const lists = [
-          [...p.cand].sort((x, y) => y.soloScore - x.soloScore),
-          [...p.cand].sort((x, y) => y.ctxScore - x.ctxScore),
-          ...[...focusIdx].map((i) => [...p.cand].filter((c) => c.v[i] > 0).sort((x, y) => (y.v[i] - x.v[i]) || (y.ctxScore - x.ctxScore))),
-        ];
+      const bySkill = (p, i) => [...p.cand].filter((c) => c.v[i] > 0).sort((x, y) => (y.v[i] - x.v[i]) || (y.ctxScore - x.ctxScore));
+      const interleave = (p, lists) => {
         // 各リストから順番に1つずつ取り、重複を除いた優先順を作る
         const order = [];
         const seenC = new Set();
@@ -341,16 +337,39 @@ export function searchBuilds(weapons, partOptions, opts) {
           if (!added) break;
         }
         return order;
+      };
+      const ctxList = (p) => [...p.cand].sort((x, y) => y.ctxScore - x.ctxScore);
+      const soloList = (p) => [...p.cand].sort((x, y) => y.soloScore - x.soloScore);
+      const sizesFor = (b) => {
+        const size = parts.map((p) => p.cand.length);
+        let n = size.reduce((x, m) => x * m, 1);
+        while (n > b) {
+          let bi = 0;
+          for (let i = 1; i < parts.length; i++) if (size[i] > size[bi]) bi = i;
+          if (size[bi] <= 1) break;
+          size[bi]--;
+          n = size.reduce((x, m) => x * m, 1);
+        }
+        return size;
+      };
+      // 境地スキル（前提スキルLvが必要）ごとの追加探索用の候補。
+      // 前提スキルと境地スキルを多く持つ防具を優先して並べる。
+      // 錬成無しでは前提スキルLv5＋境地2を揃えるのに3部位以上の同時変更が要り、
+      // 入れ替えの山登りでは届かないため、別に総当たりする。
+      const chains = [];
+      kinds.forEach((k, i) => {
+        for (const e of SKILL_EFFECTS[k] || []) {
+          const b = e.needs ? ev.index[e.needs[0]] : undefined;
+          if (b !== undefined && !chains.some((c) => c.s === i)) chains.push({ s: i, b });
+        }
       });
-      const size = parts.map((p) => p.cand.length);
-      while (combos > budget) {
-        let bi = 0;
-        for (let i = 1; i < parts.length; i++) if (size[i] > size[bi]) bi = i;
-        if (size[bi] <= 1) break;
-        size[bi]--;
-        combos = size.reduce((x, n) => x * n, 1);
-      }
-      parts.forEach((p, i) => { p.cand = rankLists[i].slice(0, size[i]); });
+      const mainSize = sizesFor(budget);
+      const chainSize = sizesFor(Math.max(2000, Math.floor(budget / 2)));
+      parts.forEach((p, pi) => {
+        const main = interleave(p, [soloList(p), ctxList(p), ...[...focusIdx].map((i) => bySkill(p, i))]);
+        p.chainCands = chains.map((c) => interleave(p, [bySkill(p, c.b), bySkill(p, c.s), ctxList(p), soloList(p)]).slice(0, chainSize[pi]));
+        p.cand = main.slice(0, mainSize[pi]);
+      });
     }
     parts.sort((a, b) => a.cand.length - b.cand.length);
     if (opts.debug) console.log('K', K, 'free', freeIdx.length, parts.map((p) => p.part + ':' + p.cand.length + '/' + p.all.length).join(' '));
@@ -401,6 +420,16 @@ export function searchBuilds(weapons, partOptions, opts) {
       }
     };
     dfs(0);
+    // 境地スキルごとの追加探索
+    if (approximated) {
+      const mainCand = parts.map((p) => p.cand);
+      const nChains = parts.length ? (parts[0].chainCands || []).length : 0;
+      for (let ci = 0; ci < nChains && !timedOut; ci++) {
+        parts.forEach((p) => { p.cand = p.chainCands[ci]; });
+        dfs(0);
+      }
+      parts.forEach((p, i) => { p.cand = mainCand[i]; });
+    }
 
     // 山登り: この武器の上位構成から、1部位ずつ全候補と入れ替える。
     // 改善が止まったら上位数件について2部位同時の入れ替えも試す
