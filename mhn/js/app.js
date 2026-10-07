@@ -316,7 +316,7 @@ function renderSearch() {
         <button type="button" class="qbtn${Q.useBuildLocks ? ' on' : ''}" id="q-locks">構築の固定を使う</button>
       </div>
       ${locked.length ? `<p class="note">固定中: ${locked.map((p) => `${PART_NAMES[p]} ${esc(D.armorById[S.build.parts[p].id].name)}`).join(' / ')}</p>` : ''}
-      <p class="note">${Q.noDrift ? '錬成無し: すべての防具を錬成なしで計算します。' : '錬成あり: 防具ごとの設定（所持・錬成タブ）に従います。未設定の防具は「' + esc(DRIFT_MODES[S.settings.defaultDrift]) + '」。'}</p>
+      <p class="note">${Q.noDrift ? '錬成無し: 新しい錬成（フル錬成）は使いません。所持・錬成タブで登録済みの錬成（固定・所持リスト）は含めて計算します。' : '錬成あり: 防具ごとの設定（所持・錬成タブ）に従います。未設定の防具は「' + esc(DRIFT_MODES[S.settings.defaultDrift]) + '」。'}</p>
     </div>
     <div class="actions"><button type="button" class="primary big-btn" id="s-run">検索</button><button type="button" id="s-clear">クリア</button>
       <button type="button" id="s-rates">発動率</button></div>
@@ -374,12 +374,14 @@ function buildSearchInput() {
   if (Q.useBuildLocks && B.weapon.locked && B.weapon.id) weapons = [resolvedWeapon(B.weapon.id)];
   else if (Q.weaponId) weapons = [resolvedWeapon(Q.weaponId)];
   else weapons = weaponsOf(Q.type, Q.element).filter((w) => !Q.ownedOnly || weaponGear(w.id).owned).map((w) => resolvedWeapon(w.id));
-  const driftFor = (id) => (Q.noDrift ? { mode: 'none' } : gearDrift(id));
+  // 錬成無し: 自由（フル錬成）は使わないが、防具に既に付いている錬成（固定・所持リスト）は含める
+  const existingOnly = (d) => (d && (d.mode === 'fixed' || d.mode === 'owned') ? d : { mode: 'none' });
+  const driftFor = (id) => (Q.noDrift ? existingOnly(gearDrift(id)) : gearDrift(id));
   const partOptions = {};
   for (const part of PARTS) {
     const P = B.parts[part];
     if (Q.useBuildLocks && P.locked && P.id) {
-      partOptions[part] = [armorOption(P.id, P.grade, Q.noDrift ? { mode: 'none' } : (P.drift || gearDrift(P.id)))];
+      partOptions[part] = [armorOption(P.id, P.grade, Q.noDrift ? existingOnly(P.drift || gearDrift(P.id)) : (P.drift || gearDrift(P.id)))];
       continue;
     }
     partOptions[part] = D.armor
