@@ -278,25 +278,79 @@ export function searchBuilds(weapons, partOptions, opts) {
       parts.push({ part, cand });
     }
 
-    // 組み合わせが多すぎる場合は、各部位を単体評価の上位に絞って総当たりし（近似）、
-    // その後「1部位ずつ全候補と入れ替える」山登りで改善する。
+    // 組み合わせが多すぎる場合は、各部位の有力候補に絞って総当たりし（近似）、
+    // その後「1部位／2部位を全候補と入れ替える」山登りで改善する。
+    //
+    // 有力候補の選び方（どれか1つで上位なら残す）:
+    //  a) 単体評価: 武器 + その防具だけの期待値
+    //  b) 文脈評価: 他の部位に「各スキルの最大値」が揃っている前提での期待値
+    //     （境地のように前提スキルLv5が要るスキルは、単体では価値が出ないためこれで拾う）
+    //  c) 必須スキル・境地の前提スキル・境地スキルそのものを最も多く持つ防具
     for (const p of parts) p.all = p.cand.slice();
     const budget = Math.max(2000, Math.floor(maxCombos / weapons.length));
     let combos = parts.reduce((x, p) => x * p.cand.length, 1);
     if (combos > budget) {
       approximated = true;
-      const solo = (c) => {
-        const lv = Int16Array.from(baseVec);
-        for (let i = 0; i < K; i++) lv[i] += c.v[i];
-        return fillDrifts(lv, c.free, c.owned ? [{ ...c.owned, id: c.o.id }] : [], ev, evOpt, freeIdx, reqArr, false).value;
+      const score = (lv, free, owned) => {
+        const r = fillDrifts(lv, free, owned, ev, evOpt, freeIdx, reqArr, false);
+        return r.unmet > 0 ? r.value - 1e6 * r.unmet : r.value;
       };
-      for (const p of parts) for (const c of p.cand) c.solo = solo(c);
-      for (const p of parts) p.cand.sort((x, y) => y.solo - x.solo);
+      const ownedOf = (c) => (c.owned ? [{ ...c.owned, id: c.o.id }] : []);
+      // 部位ごとの「各スキル最大値」ベクトルと最大錬成枠
+      const maxVec = parts.map((p) => {
+        const v = new Int16Array(K);
+        let free = 0;
+        for (const c of p.cand) {
+          for (let i = 0; i < K; i++) if (c.v[i] > v[i]) v[i] = c.v[i];
+          if (c.free > free) free = c.free;
+          if (c.owned && c.owned.cap > free) free = c.owned.cap;
+        }
+        return { v, free };
+      });
+      const focusIdx = new Set();
+      kinds.forEach((k, i) => {
+        if (reqArr[i] > 0) focusIdx.add(i);
+        for (const e of SKILL_EFFECTS[k] || []) if (e.needs) { focusIdx.add(i); if (ev.index[e.needs[0]] !== undefined) focusIdx.add(ev.index[e.needs[0]]); }
+      });
+      parts.forEach((p, pi) => {
+        const ctx = Int16Array.from(baseVec);
+        let ctxFree = 0;
+        parts.forEach((q, qi) => { if (qi !== pi) { for (let i = 0; i < K; i++) ctx[i] += maxVec[qi].v[i]; ctxFree += maxVec[qi].free; } });
+        for (const c of p.cand) {
+          const solo = Int16Array.from(baseVec);
+          const inCtx = Int16Array.from(ctx);
+          for (let i = 0; i < K; i++) { solo[i] += c.v[i]; inCtx[i] += c.v[i]; }
+          c.soloScore = score(solo, c.free, ownedOf(c));
+          c.ctxScore = score(inCtx, ctxFree + c.free, ownedOf(c));
+        }
+      });
+      const rankLists = parts.map((p) => {
+        const lists = [
+          [...p.cand].sort((x, y) => y.soloScore - x.soloScore),
+          [...p.cand].sort((x, y) => y.ctxScore - x.ctxScore),
+          ...[...focusIdx].map((i) => [...p.cand].filter((c) => c.v[i] > 0).sort((x, y) => (y.v[i] - x.v[i]) || (y.ctxScore - x.ctxScore))),
+        ];
+        // 各リストから順番に1つずつ取り、重複を除いた優先順を作る
+        const order = [];
+        const seenC = new Set();
+        for (let r = 0; order.length < p.cand.length; r++) {
+          let added = false;
+          for (const l of lists) {
+            if (r < l.length) { added = true; if (!seenC.has(l[r])) { seenC.add(l[r]); order.push(l[r]); } }
+          }
+          if (!added) break;
+        }
+        return order;
+      });
+      const size = parts.map((p) => p.cand.length);
       while (combos > budget) {
-        const big = parts.reduce((x, y) => (x.cand.length >= y.cand.length ? x : y));
-        big.cand = big.cand.slice(0, Math.max(1, big.cand.length - 1));
-        combos = parts.reduce((x, p) => x * p.cand.length, 1);
+        let bi = 0;
+        for (let i = 1; i < parts.length; i++) if (size[i] > size[bi]) bi = i;
+        if (size[bi] <= 1) break;
+        size[bi]--;
+        combos = size.reduce((x, n) => x * n, 1);
       }
+      parts.forEach((p, i) => { p.cand = rankLists[i].slice(0, size[i]); });
     }
     parts.sort((a, b) => a.cand.length - b.cand.length);
     if (opts.debug) console.log('K', K, 'free', freeIdx.length, parts.map((p) => p.part + ':' + p.cand.length + '/' + p.all.length).join(' '));
@@ -348,24 +402,50 @@ export function searchBuilds(weapons, partOptions, opts) {
     };
     dfs(0);
 
-    // 山登り: この武器の上位構成から、1部位ずつ全候補と入れ替えを試す
+    // 山登り: この武器の上位構成から、1部位ずつ全候補と入れ替える。
+    // 改善が止まったら上位数件について2部位同時の入れ替えも試す
+    // （境地スキルのように2部位そろって初めて効くものを拾うため）。
     if (approximated) {
-      for (let round = 0; round < 4 && !timedOut; round++) {
-        let improved = false;
-        const base = top.filter((e) => e.weapon === weapon).map((e) => e.choice);
-        for (const choice of base) {
+      const single = () => {
+        for (let round = 0; round < 6 && !timedOut; round++) {
+          let improved = false;
+          const base = top.filter((e) => e.weapon === weapon).map((e) => e.choice);
+          for (const choice of base) {
+            for (let i = 0; i < parts.length && !timedOut; i++) {
+              for (const c of parts[i].all) {
+                if (c === choice[i]) continue;
+                const next = choice.slice();
+                next[i] = c;
+                const before = threshold();
+                const sc = consider(next);
+                if (sc !== null && sc > before) improved = true;
+              }
+            }
+          }
+          if (!improved) break;
+        }
+      };
+      single();
+      for (let round = 0; round < 3 && !timedOut; round++) {
+        const best = top.length ? top[0].score : -Infinity;
+        const bases = top.filter((e) => e.weapon === weapon).slice(0, 3).map((e) => e.choice);
+        for (const choice of bases) {
           for (let i = 0; i < parts.length && !timedOut; i++) {
-            for (const c of parts[i].all) {
-              if (c === choice[i]) continue;
-              const next = choice.slice();
-              next[i] = c;
-              const before = threshold();
-              const sc = consider(next);
-              if (sc !== null && sc > before) improved = true;
+            for (let j = i + 1; j < parts.length && !timedOut; j++) {
+              for (const a of parts[i].all) {
+                for (const b of parts[j].all) {
+                  if (a === choice[i] && b === choice[j]) continue;
+                  const next = choice.slice();
+                  next[i] = a;
+                  next[j] = b;
+                  consider(next);
+                }
+              }
             }
           }
         }
-        if (!improved) break;
+        single();
+        if (!(top.length && top[0].score > best)) break;
       }
     }
   }
