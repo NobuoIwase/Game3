@@ -461,7 +461,10 @@ function resultsHtml() {
     for (const d of r.drifts) (byPiece[d.pieceId] = byPiece[d.pieceId] || []).push([d.kind, d.lv]);
     const used = r.drifts.reduce((n, d) => n + d.lv, 0);
     const reqKeys = Object.keys(r.required || {});
-    const skills = sortedLevels(r.levels).filter(([k]) => SKILL_EFFECTS[k] || reqKeys.includes(k));
+    // 発動スキルはすべて表示（ダメージに関係するもの・必須スキルを先に、それ以外は後ろに薄く）
+    const main = (k) => SKILL_EFFECTS[k] || reqKeys.includes(k);
+    const all = sortedLevels(r.levels);
+    const skills = [...all.filter(([k]) => main(k)), ...all.filter(([k]) => !main(k))];
     const unmet = Object.entries(r.unmet || {});
     const w = D.weaponById[r.weapon.id];
     return `<article class="res${r.edited ? ' edited' : ''}">
@@ -481,7 +484,7 @@ function resultsHtml() {
       <div class="res-side">
         <div class="res-val"><span class="small muted">期待値</span><b>${fmt(r.damage)}</b><span class="small muted">会心${r.critRate.toFixed(0)}%・錬成${used}/${r.slotsTotal}</span>
           ${r.edited ? '<span class="tag">錬成編集済み</span>' : ''}</div>
-        <div class="res-skills">${skills.map(([k, l]) => skillCard(k, l)).join('')}</div>
+        <div class="res-skills">${skills.map(([k, l]) => skillCard(k, l, main(k) ? '' : 'weak')).join('')}</div>
         ${unmet.length ? `<div class="warnbox">不足: ${unmet.map(([k, n]) => `${esc(skillName(k))} あと${n}`).join('、')}</div>` : ''}
         <div class="row"><button type="button" class="small" data-apply="${i}">構築で開く</button></div>
       </div>
