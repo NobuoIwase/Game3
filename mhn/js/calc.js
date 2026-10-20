@@ -69,6 +69,7 @@ export function computeDamage(weapon, levels, skillDefs, settings = {}) {
       if (e.perWeaponCrit) v *= Math.max(0, weapon.crit);
       if (e.perHp) v *= hp;
       if (e.mul) v *= e.mul;
+      if (e.eventMul && settings.eventActive) v *= e.eventMul;
       if (e.term === 'critMul') { t.critMul = Math.max(t.critMul, v); continue; }
       if (e.term === 'brutal') { t.brutal = Math.max(t.brutal, v); t.brutalChance = effectValue(def, lv, 1); continue; }
       // 楽観評価（探索の上界計算用）では不利な効果を無視する

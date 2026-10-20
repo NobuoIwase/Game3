@@ -1,5 +1,8 @@
 // 画面部品（アイコン・シート）
-import { ELEMENTS, WEAPON_TYPES } from './model.js';
+import { ELEMENTS, WEAPON_TYPES, PART_NAMES } from './model.js';
+
+let UD = null;
+export function setUiData(d) { UD = d; }
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -36,9 +39,18 @@ export function weaponTypeIcon(D, type, cls = 'ico') {
   return img(w && w.img, cls, WEAPON_TYPES[type]);
 }
 
-// 防具アイコン: モンスターのアイコン（無ければ防具画像）
-export const armorIcon = (a, cls = 'ico') => img(a && (a.mon || a.img), cls, a && a.name);
-export const weaponIcon = (w, cls = 'ico') => img(w && w.img, cls, w && w.name);
+// 防具アイコン: モンスターのアイコン（無ければ防具画像、それも無ければ部位の文字）
+export function armorIcon(a, cls = 'ico') {
+  const url = a && (a.mon || a.img);
+  if (url) return img(url, cls, a.name);
+  return `<span class="${cls} ico-txt${a && (a.extra || a.custom) ? ' ico-ev' : ''}">${a ? esc(PART_NAMES[a.part] || '?') : ''}</span>`;
+}
+// 武器アイコン: 武器の画像（無ければ武器種の画像）
+export function weaponIcon(w, cls = 'ico') {
+  if (w && w.img) return img(w.img, cls, w.name);
+  if (w && UD) return weaponTypeIcon(UD, w.type, cls);
+  return img(null, cls);
+}
 
 // ---- ボトムシート ----
 let sheetOnClose = null;

@@ -6,6 +6,7 @@ let skillDefs = null;
 self.onmessage = async (ev) => {
   const msg = ev.data;
   try {
+    if (msg.skillDefs) skillDefs = msg.skillDefs;
     if (!skillDefs) {
       const res = await fetch(new URL('../data/skills.json', import.meta.url));
       skillDefs = (await res.json()).skills;

@@ -1,7 +1,7 @@
-import { loadData, resolveWeapon, resolveArmor, gradesOf } from './data.js';
+import { loadData, resolveWeapon, resolveArmor, gradesOf, withCustom } from './data.js';
 import { WEAPON_TYPES, ELEMENTS, PARTS, PART_NAMES, SKILL_EFFECTS, AILMENT_ELEMENTS, conditionalSkills, defaultRate } from './model.js';
 import { evaluateBuild, isRelevant } from './search.js';
-import { esc, elemIcon, weaponTypeIcon, armorIcon, weaponIcon, openSheet, closeSheet } from './ui.js';
+import { esc, elemIcon, weaponTypeIcon, armorIcon, weaponIcon, openSheet, closeSheet, setUiData } from './ui.js';
 
 const STORE_KEY = 'mhn-calc-v1';
 const DRIFT_MODES = { free: '自由（フル錬成）', owned: '所持リストから', fixed: '固定', none: '錬成なし' };
@@ -13,7 +13,8 @@ const QUICK = [
 ];
 const STYLE_MS = [10, 15, 20];
 
-let D = null;
+let D0 = null; // 公式＋補完データ
+let D = null; // D0 ＋ 手入力の装備
 let S = null;
 let worker = null;
 let lastResults = [];
@@ -120,6 +121,7 @@ function calcSettings(type, over = {}) {
     elemWeakMul: Number.isFinite(Number(S.settings.elemWeakMul)) ? Number(S.settings.elemWeakMul) : 1,
     extraAtk: Number(S.settings.extraAtk) || 0,
     hpBonus: Number(S.settings.hpBonus) || 0,
+    eventActive: !!S.settings.eventActive,
     ...over,
   };
 }
@@ -394,6 +396,7 @@ function buildSearchInput() {
     settings: calcSettings(type),
     required: Object.fromEntries(Q.required),
     freeKinds: [...freeKinds()],
+    skillDefs: D.skills,
     topN: Q.topN,
     timeLimitMs: 25000,
   };
@@ -463,7 +466,7 @@ function resultsHtml() {
     const w = D.weaponById[r.weapon.id];
     return `<article class="res${r.edited ? ' edited' : ''}">
       <div class="res-build">
-        <div class="res-weapon">${weaponIcon(w, 'ico-m')}<div><span class="rank">#${i + 1}</span> <b>${esc(r.weapon.name)}</b> ${elemIcon(r.weapon.element, 's')}
+        <div class="res-weapon">${weaponIcon(w, 'ico-m')}<div><span class="rank">#${i + 1}</span> <b>${esc(r.weapon.name)}</b>${tagOf(D.weaponById[r.weapon.id])} ${elemIcon(r.weapon.element, 's')}
           <div class="small muted">${r.weapon.grade}-${r.weapon.sub}・攻撃${r.weapon.atk}${r.weapon.elem ? `・属性${r.weapon.elem}` : ''}・会心${r.weapon.crit}%</div></div></div>
         <div class="res-armor">${PARTS.filter((p) => r.pieces[p]).map((p) => {
     const x = r.pieces[p];
@@ -471,7 +474,7 @@ function resultsHtml() {
     const dr = byPiece[x.id] || [];
     const alt = x.alternatives && x.alternatives.length ? `<span class="alt">他${x.alternatives.length}</span>` : '';
     return `<button type="button" class="piece" data-res="${i}" data-part="${p}" title="タップで錬成を編集">${armorIcon(a, 'ico-s')}
-            <span class="pn">${esc(x.name)}<small> G${x.grade}</small>${alt}</span>
+            <span class="pn">${esc(x.name)}${tagOf(D.armorById[x.id])}<small> G${x.grade}</small>${alt}</span>
             <span class="pd">${dr.length ? dr.map(([k, l]) => skillCard(k, l, 'drift mini')).join('') : `<span class="pd-none">${x.slots ? (x.drift.mode === 'none' ? '錬成なし' : '空き') : '枠なし'}</span>`}</span></button>`;
   }).join('')}</div>
       </div>
@@ -530,7 +533,7 @@ function openWeaponPicker(type, element, allowNone, onPick) {
       <div class="plist">${allowNone ? '<button type="button" class="pitem" data-id=""><span class="ico-m ico-none"></span><span>指定なし（すべての武器）</span></button>' : ''}
       ${list.map((w) => {
     const r = resolvedWeapon(w.id);
-    return `<button type="button" class="pitem" data-id="${w.id}">${weaponIcon(w, 'ico-m')}<span><b>${esc(w.name)}</b>${weaponGear(w.id).owned ? ' <span class="star">★</span>' : ''}
+    return `<button type="button" class="pitem" data-id="${w.id}">${weaponIcon(w, 'ico-m')}<span><b>${esc(w.name)}</b>${tagOf(w)}${weaponGear(w.id).owned ? ' <span class="star">★</span>' : ''}
           <small class="muted">${elemIcon(w.element, 's')} 攻撃${r.atk}${r.elem ? `・属性${r.elem}` : ''}・会心${r.crit}%</small>
           <span>${r.skills.map(([k, l]) => skillCard(k, l, 'mini')).join('')}</span></span></button>`;
   }).join('') || '<div class="muted">該当なし</div>'}</div>`;
@@ -553,7 +556,7 @@ function openArmorPicker(part, onPick) {
       <div class="plist"><button type="button" class="pitem" data-id=""><span class="ico-m ico-none"></span><span>（なし）</span></button>
       ${list.map((a) => {
     const r = resolveArmor(a, armorGear(a.id).grade || S.settings.defaultGrade);
-    return `<button type="button" class="pitem" data-id="${a.id}">${armorIcon(a, 'ico-m')}<span><b>${esc(a.name)}</b>${armorGear(a.id).owned ? ' <span class="star">★</span>' : ''}
+    return `<button type="button" class="pitem" data-id="${a.id}">${armorIcon(a, 'ico-m')}<span><b>${esc(a.name)}</b>${tagOf(a)}${armorGear(a.id).owned ? ' <span class="star">★</span>' : ''}
           <small class="muted">G${r.grade}・錬成枠${r.slots}</small><span>${r.skills.map(([k, l]) => skillCard(k, l, 'mini')).join('')}</span></span></button>`;
   }).join('')}</div>`;
     const qi = $('#ap-q', body);
@@ -687,6 +690,55 @@ function buildSummaryHtml(r) {
 
 // ---- 所持・錬成 -----------------------------------------------------------------------
 
+// 手入力の装備を反映し直す
+function refreshData() {
+  D = withCustom(D0, S.gear.custom || []);
+  setUiData(D);
+}
+const tagOf = (x) => (x && x.custom ? '<span class="tag">手入力</span>' : x && x.extra ? '<span class="tag tag-ev">限定</span>' : '');
+
+const CUSTOM_PARTS = ['weapon', ...PARTS];
+function openCustomSheet(existing) {
+  const c = existing ? clone(existing) : { id: `CUSTOM_${Date.now()}`, kind: 'armor', part: 'head', type: S.search.type, element: 'NO_ELEMENT', name: '', atk: 0, elem: 0, crit: 0, slots: 1, skills: [] };
+  const render = (body) => {
+    const isW = c.kind === 'weapon';
+    body.innerHTML = `<p class="note">公式データやナウかるに無い装備（新しいイベント装備など）を手入力で追加できます。ゲーム画面の値（使うグレードの値）を入れてください。</p>
+      <div class="seg">${CUSTOM_PARTS.map((p) => `<button type="button" data-cp="${p}" class="${(isW ? 'weapon' : c.part) === p ? 'on' : ''}">${PART_NAMES[p]}</button>`).join('')}</div>
+      <div class="row"><label>名前<input type="text" id="c-name" value="${esc(c.name)}" placeholder="例: ジャックオーヘッド"></label></div>
+      ${isW ? `${typePicker('c-type', c.type)}${elemPicker('c-elem', c.element, false)}
+        <div class="row"><label>攻撃力<input type="number" id="c-atk" value="${c.atk}"></label><label>属性値<input type="number" id="c-elemv" value="${c.elem}"></label><label>会心%<input type="number" id="c-crit" value="${c.crit}" class="narrow"></label></div>`
+    : `<div class="row"><label>錬成枠<select id="c-slots">${[0, 1, 2, 3].map((n) => opt(n, n, c.slots)).join('')}</select></label></div>`}
+      <h3>スキル</h3><div class="dlist">${c.skills.map(([k, n], i) => `<div class="drow"><select data-ck="${i}">${skillOptions(k, false)}</select>
+        <div class="stepper"><button type="button" data-cdec="${i}">−</button><b>Lv${n}</b><button type="button" data-cinc="${i}">＋</button></div>
+        <button type="button" class="small" data-cdel="${i}">削除</button></div>`).join('')}
+        <button type="button" class="small" id="c-add">＋ スキルを追加</button></div>
+      <div class="row sheet-actions"><button type="button" class="primary" id="c-save">保存</button>${existing ? '<button type="button" id="c-del">この装備を削除</button>' : ''}</div>`;
+    const sync = () => {
+      c.name = $('#c-name', body).value.trim();
+      if (isW) { c.atk = +$('#c-atk', body).value || 0; c.elem = +$('#c-elemv', body).value || 0; c.crit = +$('#c-crit', body).value || 0; } else c.slots = +$('#c-slots', body).value;
+    };
+    body.querySelectorAll('[data-cp]').forEach((b) => b.addEventListener('click', () => { sync(); if (b.dataset.cp === 'weapon') c.kind = 'weapon'; else { c.kind = 'armor'; c.part = b.dataset.cp; } render(body); }));
+    bindPicker(body, 'c-type', (v) => { sync(); c.type = v; render(body); });
+    bindPicker(body, 'c-elem', (v) => { sync(); c.element = v; render(body); });
+    body.querySelectorAll('[data-ck]').forEach((el) => el.addEventListener('change', () => { c.skills[+el.dataset.ck][0] = el.value; }));
+    body.querySelectorAll('[data-cinc]').forEach((b) => b.addEventListener('click', () => { sync(); const r = c.skills[+b.dataset.cinc]; r[1] = Math.min(D.skills[r[0]] ? D.skills[r[0]].max : 5, r[1] + 1); render(body); }));
+    body.querySelectorAll('[data-cdec]').forEach((b) => b.addEventListener('click', () => { sync(); const r = c.skills[+b.dataset.cdec]; r[1] = Math.max(1, r[1] - 1); render(body); }));
+    body.querySelectorAll('[data-cdel]').forEach((b) => b.addEventListener('click', () => { sync(); c.skills.splice(+b.dataset.cdel, 1); render(body); }));
+    $('#c-add', body).addEventListener('click', () => { sync(); c.skills.push(['ATTACK_BOOST', 1]); render(body); });
+    $('#c-save', body).addEventListener('click', () => {
+      sync();
+      const list = (S.gear.custom || []).filter((x) => x.id !== c.id);
+      S.gear.custom = [...list, c];
+      save(); refreshData(); closeSheet(); renderGear(); toast('保存しました');
+    });
+    if ($('#c-del', body)) $('#c-del', body).addEventListener('click', () => {
+      S.gear.custom = (S.gear.custom || []).filter((x) => x.id !== c.id);
+      save(); refreshData(); closeSheet(); renderGear(); toast('削除しました');
+    });
+  };
+  openSheet(existing ? '手入力の装備を編集' : '装備を手入力で追加', '', render);
+}
+
 function renderGear() {
   const root = $('#tab-gear');
   const U = S.ui;
@@ -698,14 +750,20 @@ function renderGear() {
     ? `<div class="seg">${[...PARTS, 'all'].map((p) => `<button type="button" data-gpart="${p}" class="${U.gearPart === p ? 'on' : ''}">${p === 'all' ? 'すべて' : PART_NAMES[p]}</button>`).join('')}</div>`
     : typePicker('g-wtype', U.gearWeaponType)}
     <div class="row"><input type="search" id="g-filter" value="${esc(U.gearFilter)}" placeholder="名前・シリーズで絞り込み">
-      <label class="inline"><input type="checkbox" id="g-owned" ${U.gearOwnedOnly ? 'checked' : ''}> 所持のみ</label></div>
+      <label class="inline"><input type="checkbox" id="g-owned" ${U.gearOwnedOnly ? 'checked' : ''}> 所持のみ</label>
+      <button type="button" class="small" id="g-custom">＋ 装備を手入力で追加</button></div>
   </section><section class="panel" id="g-list"></section>`;
+  $('#g-custom').addEventListener('click', () => openCustomSheet(null));
   root.querySelectorAll('[data-kind]').forEach((b) => b.addEventListener('click', () => { U.gearKind = b.dataset.kind; save(); renderGear(); }));
   root.querySelectorAll('[data-gpart]').forEach((b) => b.addEventListener('click', () => { U.gearPart = b.dataset.gpart; save(); renderGear(); }));
   bindPicker(root, 'g-wtype', (v) => { U.gearWeaponType = v; save(); renderGear(); });
   $('#g-filter').addEventListener('input', (e) => { U.gearFilter = e.target.value; save(); renderGearList(); });
   $('#g-owned').addEventListener('change', (e) => { U.gearOwnedOnly = e.target.checked; save(); renderGearList(); });
   renderGearList();
+}
+
+function bindCustomEdit(box) {
+  box.querySelectorAll('[data-cedit]').forEach((b) => b.addEventListener('click', () => openCustomSheet((S.gear.custom || []).find((x) => x.id === b.dataset.cedit))));
 }
 
 function renderGearList() {
@@ -716,12 +774,13 @@ function renderGearList() {
     const list = D.weapons.filter((w) => w.type === U.gearWeaponType && (!q || w.name.includes(q) || w.series.includes(q)) && (!U.gearOwnedOnly || weaponGear(w.id).owned));
     box.innerHTML = list.map((w) => {
       const g = weaponGear(w.id);
-      return `<div class="gitem">${weaponIcon(w, 'ico-m')}<div class="gmain"><b>${esc(w.name)}</b> ${elemIcon(w.element, 's')}${w.style ? '<small class="muted"> スタイル強化</small>' : ''}
+      return `<div class="gitem">${weaponIcon(w, 'ico-m')}<div class="gmain"><b>${esc(w.name)}</b>${tagOf(w)} ${elemIcon(w.element, 's')}${w.custom ? ` <button type="button" class="small" data-cedit="${w.id}">編集</button>` : ''}${w.style ? '<small class="muted"> スタイル強化</small>' : ''}
         <div class="row small"><label class="inline"><input type="checkbox" data-wown="${w.id}" ${g.owned ? 'checked' : ''}>所持</label>
         <label>G<select data-wgrade="${w.id}">${gradesOf(w).map((x) => opt(x, x, g.grade || S.settings.defaultGrade)).join('')}</select></label>
         <label>段階<select data-wsub="${w.id}">${[1, 2, 3, 4, 5].map((x) => opt(x, x, g.sub || 5)).join('')}</select></label></div></div></div>`;
     }).join('') || '<div class="empty">該当なし</div>';
     const setW = (id, k, v) => { S.gear.weapons[id] = { ...weaponGear(id), [k]: v }; save(); };
+    bindCustomEdit(box);
     box.querySelectorAll('[data-wown]').forEach((el) => el.addEventListener('change', () => setW(el.dataset.wown, 'owned', el.checked)));
     box.querySelectorAll('[data-wgrade]').forEach((el) => el.addEventListener('change', () => setW(el.dataset.wgrade, 'grade', +el.value)));
     box.querySelectorAll('[data-wsub]').forEach((el) => el.addEventListener('change', () => setW(el.dataset.wsub, 'sub', +el.value)));
@@ -733,7 +792,7 @@ function renderGearList() {
     const r = resolveArmor(a, g.grade || S.settings.defaultGrade);
     const mode = g.mode || 'default';
     const list2 = mode === 'owned' ? (g.tokens || []).map(([k, n]) => skillCard(k, `×${n}`, 'drift')) : mode === 'fixed' ? (g.fixed || []).map(([k, n]) => skillCard(k, n, 'drift')) : [];
-    return `<div class="gitem">${armorIcon(a, 'ico-m')}<div class="gmain"><b>${esc(a.name)}</b> <small class="muted">${PART_NAMES[a.part]}</small>
+    return `<div class="gitem">${armorIcon(a, 'ico-m')}<div class="gmain"><b>${esc(a.name)}</b>${tagOf(a)} <small class="muted">${PART_NAMES[a.part]}</small>${a.custom ? ` <button type="button" class="small" data-cedit="${a.id}">編集</button>` : ''}
       <div class="row small"><label class="inline"><input type="checkbox" data-aown="${a.id}" ${g.owned ? 'checked' : ''}>所持</label>
         <label>G<select data-agrade="${a.id}">${gradesOf(a).map((x) => opt(x, x, r.grade)).join('')}</select></label></div>
       <div>${r.skills.map(([k, l]) => skillCard(k, l, 'mini')).join('')}</div>
@@ -741,6 +800,7 @@ function renderGearList() {
         <span>${list2.join('') || '<span class="muted small">タップして設定</span>'}</span><i>✎</i></button></div></div>`;
   }).join('') || '<div class="empty">該当なし</div>';
   const setA = (id, k, v) => { S.gear.armor[id] = { ...armorGear(id), [k]: v }; save(); };
+  bindCustomEdit(box);
   box.querySelectorAll('[data-aown]').forEach((el) => el.addEventListener('change', () => setA(el.dataset.aown, 'owned', el.checked)));
   box.querySelectorAll('[data-agrade]').forEach((el) => el.addEventListener('change', () => { setA(el.dataset.agrade, 'grade', +el.value); renderGearList(); }));
   box.querySelectorAll('[data-aedit]').forEach((el) => el.addEventListener('click', () => {
@@ -768,6 +828,7 @@ function renderSettings() {
       <label>未所持装備のグレード<select id="t-grade">${[5, 6, 7, 8, 9, 10].map((g) => opt(g, g, T.defaultGrade)).join('')}</select></label>
       <label>防具の錬成の既定<select id="t-drift">${opt('free', '自由（フル錬成）', T.defaultDrift)}${opt('none', '錬成なし', T.defaultDrift)}</select></label>
     </div>
+    <div class="row"><label class="inline"><input type="checkbox" id="t-event" ${T.eventActive ? 'checked' : ''}> イベント期間中として計算（ホットサマー等のイベントスキルの効果が10倍）</label></div>
     <div class="row"><button type="button" id="t-rates">発動率を設定</button></div>
   </section>
   <section class="panel">
@@ -784,6 +845,7 @@ function renderSettings() {
   <section class="panel small">
     <h3>データと計算の前提</h3>
     <p>装備・スキルの数値と画像: <a href="${esc(D.meta.source)}" target="_blank" rel="noopener">モンハンNow公式サイト</a>（取得 ${esc(D.meta.fetched_at)}）。画像は公式サイトのURLを表示時に参照しています。</p>
+    ${D.extraMeta ? `<p>公式一覧に無い季節限定・コラボ装備（${esc(D.extraMeta.series.join('・'))}）は <a href="${esc(D.extraMeta.source)}" target="_blank" rel="noopener">ナウかる</a> の装備データから補完（最大グレードの値のみ。取得 ${esc(D.extraMeta.fetched_at)}）。一覧で「限定」と表示されます。それ以外の新装備は「所持・錬成 → 装備を手入力で追加」から登録できます。</p>` : ''}
     <ul>
       <li>期待値はモーション値100・肉質100あたり。武器種固有の補正は入れていないため、比較は同じ武器種どうしで。</li>
       <li>攻撃力%系は武器攻撃力に、与ダメージ%系は最終値に掛け、同じ系統どうしは加算。会心倍率は基本1.25倍、マイナス会心は0.75倍。</li>
@@ -799,6 +861,7 @@ function renderSettings() {
   $('#t-hp').addEventListener('change', (e) => set('hpBonus', +e.target.value || 0));
   $('#t-grade').addEventListener('change', (e) => set('defaultGrade', +e.target.value));
   $('#t-drift').addEventListener('change', (e) => set('defaultDrift', e.target.value));
+  $('#t-event').addEventListener('change', (e) => set('eventActive', e.target.checked));
   $('#t-rates').addEventListener('click', () => openRateSheet(S.search.type));
   root.querySelectorAll('[data-fk]').forEach((el) => el.addEventListener('change', () => {
     const cur = new Set(freeKinds());
@@ -839,7 +902,8 @@ function switchTab(tab) {
 async function main() {
   S = load();
   try {
-    D = await loadData('./data');
+    D0 = await loadData('./data');
+    refreshData();
   } catch (e) {
     document.querySelector('main').innerHTML = `<p class="warnbox">データを読み込めませんでした: ${esc(e.message)}</p>`;
     return;

@@ -111,6 +111,7 @@ export const SKILL_EFFECTS = {
   CHARGE_MASTER: [{ term: 'elemPct', rate: 0, note: '溜め攻撃の割合' }],
   SP_OVERDRIVE: [{ term: 'elemPct', rate: 30 }],
   CRITICAL_ELEMENT: [{ term: 'critElem' }],
+  EV_SWELTERING_SUMMER2025: [{ term: 'elemFlat', elem: 'FIRE', eventMul: 10, note: 'イベント期間中は10倍（設定で切替）' }],
   KUSHALA_BLESS: [{ term: 'elder', elem: 'ICE' }],
   VELKHANA_ARMOR: [{ term: 'elder', elem: 'ICE' }],
   KIRIN_ROBE: [{ term: 'elder', elem: 'THUNDER' }],

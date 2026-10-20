@@ -269,3 +269,7 @@ details summary { cursor: pointer; font-weight: 700; font-size: 13px; margin: 6p
   font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw;
 }
 #toast.show { opacity: .95; }
+
+.ico-txt { display: inline-flex; align-items: center; justify-content: center; font-weight: 800; color: var(--muted); font-size: 13px; }
+.ico-ev { background: #fde8d7; color: #c2410c; }
+.tag-ev { background: #ffedd5; color: #c2410c; margin-left: 4px; }

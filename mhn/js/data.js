@@ -1,10 +1,55 @@
 // データの読み込みと、グレード指定での装備ステータス解決。
 
+// イベント限定スキルの効果量（公式のスキル一覧に載っていないもの）。
+// ホットサマー【2025】: 火属性+10/+20/+50（イベント期間中は10倍）。Lv3は資料により+30の記載もある。
+export const EVENT_SKILL_VALUES = {
+  EV_SWELTERING_SUMMER2025: [[10], [20], [50]],
+};
+
 export async function loadData(base = './data') {
-  const [weapons, armor, skillData, meta] = await Promise.all(
-    ['weapons', 'armor', 'skills', 'meta'].map((n) => fetch(`${base}/${n}.json`).then((r) => r.json())),
+  const [weapons, armor, skillData, meta, extra] = await Promise.all(
+    ['weapons', 'armor', 'skills', 'meta', 'extra'].map((n) => fetch(`${base}/${n}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null)),
   );
-  return indexData({ weapons, armor, skills: skillData.skills, driftstones: skillData.driftstones, meta });
+  return indexData(mergeExtra({ weapons, armor, skills: skillData.skills, driftstones: skillData.driftstones, meta }, extra));
+}
+
+// 公式一覧に無い装備（季節限定・コラボ等）の補完データを合流させる
+export function mergeExtra(d, extra) {
+  if (!extra) return d;
+  const skills = { ...d.skills };
+  for (const [k, v] of Object.entries(extra.skills || {})) {
+    if (!skills[k]) skills[k] = { ...v, eff: EVENT_SKILL_VALUES[k] || v.eff || [] };
+  }
+  return {
+    ...d,
+    skills,
+    weapons: [...d.weapons, ...(extra.weapons || [])],
+    armor: [...d.armor, ...(extra.armor || [])],
+    extraMeta: { source: extra.source, fetched_at: extra.fetched_at, series: extra.series },
+  };
+}
+
+// 手入力の装備（所持・錬成タブで追加したもの）を合流させる
+export function withCustom(d, custom = []) {
+  const weapons = d.weapons.filter((w) => !w.custom);
+  const armor = d.armor.filter((a) => !a.custom);
+  for (const c of custom) {
+    const skills = (c.skills || []).filter(([k]) => d.skills[k]);
+    if (c.kind === 'weapon') {
+      const row = [Number(c.atk) || 0, Number(c.elem) || 0, Number(c.crit) || 0];
+      weapons.push({
+        id: c.id, name: c.name || '手入力の武器', baseName: c.name, type: c.type, element: c.element || 'NO_ELEMENT',
+        series: '手入力', sort: 1e9, style: false, img: null, mon: null, custom: true,
+        grades: { 10: { lv: [row, row, row, row, row], skills } },
+      });
+    } else {
+      armor.push({
+        id: c.id, name: c.name || '手入力の防具', part: c.part, series: '手入力', seriesId: 0, img: null, mon: null, custom: true,
+        grades: { 10: { slots: Number(c.slots) || 0, skills } },
+      });
+    }
+  }
+  return indexData({ ...d, weapons, armor });
 }
 
 export function indexData(d) {

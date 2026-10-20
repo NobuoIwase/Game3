@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { indexData, resolveWeapon, resolveArmor } from '../js/data.js';
+import { indexData, resolveWeapon, resolveArmor, mergeExtra, withCustom } from '../js/data.js';
 import { computeDamage } from '../js/calc.js';
 import { compileEvaluator } from '../js/fasteval.js';
 import { searchBuilds, evaluateBuild, isRelevant } from '../js/search.js';
@@ -14,7 +14,7 @@ import { extractIslandProps } from '../tools/build_data.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const j = (n) => JSON.parse(readFileSync(join(ROOT, 'data', `${n}.json`), 'utf8'));
 const sk = j('skills');
-const D = indexData({ weapons: j('weapons'), armor: j('armor'), skills: sk.skills, driftstones: sk.driftstones, meta: j('meta') });
+const D = indexData(mergeExtra({ weapons: j('weapons'), armor: j('armor'), skills: sk.skills, driftstones: sk.driftstones, meta: j('meta') }, j('extra')));
 
 const W = (over = {}) => ({ type: 'LONG_SWORD', element: 'NO_ELEMENT', atk: 1000, elem: 0, crit: 0, skills: [], ...over });
 
@@ -157,6 +157,33 @@ test('探索: 上位結果は高速評価と詳細計算で同じ順位になる
     assert.ok(Math.abs(r.damage - r.value) / r.value < 0.02, `${r.damage} vs ${r.value}`);
     assert.ok(r.eval.drifts.reduce((s, d) => s + d.lv, 0) <= r.eval.slotsTotal);
   }
+});
+
+test('補完データ: 公式一覧に無い季節限定装備が入り、公式と重複しない', () => {
+  const names = (list) => list.map((x) => x.name);
+  assert.ok(names(D.armor).includes('ジャックオーヘッド'));
+  assert.ok(names(D.armor).includes('スイミングゴーグル'));
+  const ids = new Set();
+  for (const x of [...D.weapons, ...D.armor]) { assert.ok(!ids.has(x.id), x.id); ids.add(x.id); }
+  const official = new Set(j('armor').map((a) => a.name));
+  for (const a of j('extra').armor) assert.ok(!official.has(a.name), a.name);
+  for (const a of D.armor) assert.ok(PARTS.includes(a.part), a.id);
+});
+
+test('イベントスキル: ホットサマー【2025】は火属性に加算、イベント期間中は10倍', () => {
+  const w = W({ element: 'FIRE', elem: 300 });
+  assert.equal(computeDamage(w, { EV_SWELTERING_SUMMER2025: 3 }, D.skills, {}).elemNorm, 350);
+  assert.equal(computeDamage(w, { EV_SWELTERING_SUMMER2025: 3 }, D.skills, { eventActive: true }).elemNorm, 800);
+  assert.equal(computeDamage(W({ element: 'ICE', elem: 300 }), { EV_SWELTERING_SUMMER2025: 3 }, D.skills, {}).elemNorm, 300);
+});
+
+test('手入力の装備: 追加すると計算・探索に使える', () => {
+  const D2 = withCustom(D, [{ id: 'CUSTOM_1', kind: 'armor', part: 'head', name: 'テスト頭', slots: 2, skills: [['ATTACK_BOOST', 5]] }]);
+  const a = resolveArmor(D2.armorById.CUSTOM_1, 10);
+  assert.equal(a.slots, 2);
+  const weapon = resolveWeapon(D.weaponById.ORE_SWORDSHIELD, 10, 5);
+  const out = searchBuilds([weapon], { head: [{ ...a, drift: { mode: 'none' } }] }, { skillDefs: D2.skills, settings: {}, freeKinds: D.driftable, topN: 1 });
+  assert.equal(out.results[0].eval.result.phys, 1912 + 300);
 });
 
 test('取り込みツール: root-island の props を読める', () => {

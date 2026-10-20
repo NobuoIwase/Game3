@@ -47,6 +47,7 @@ export function compileEvaluator(weapon, skillDefs, settings, kinds) {
         if (e.stacksFromEff !== undefined) v *= effectValue(def, lv, e.stacksFromEff) || 1;
         if (e.perWeaponCrit) v *= Math.max(0, weapon.crit);
         if (e.mul) v *= e.mul;
+        if (e.eventMul && settings.eventActive) v *= e.eventMul;
         if (e.term === 'critMul') { cm[lv] = Math.max(cm[lv], v); continue; }
         if (e.term === 'brutal') { br[lv] = Math.max(br[lv], v); bc[lv] = effectValue(def, lv, 1); continue; }
         if (settings.optimistic && v < 0) continue;

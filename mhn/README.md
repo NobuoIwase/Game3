@@ -55,8 +55,17 @@
 `data/*.json` は公式サイト（monsterhunternow.com/ja の武器・防具・スキル一覧）に
 埋め込まれている数値データから生成しています（名前と数値のみ。画像や説明文は含めません）。
 
+公式の一覧には季節限定・コラボ装備（ハロウィン、カーニバル、サマー、旧正月など）と一部のイベント限定スキルが載っていないため、
+`data/extra.json` に [ナウかる](https://mhnowcalc.com/calc/) の装備データから補完しています
+（公式データに同名の装備が1つも無いシリーズだけ。最大グレードの値のみ。画面では「限定」表示）。
+それでも無い新装備は、アプリの「所持・錬成 → 装備を手入力で追加」で登録できます。
+
+イベントスキルの効果は `js/data.js` の `EVENT_SKILL_VALUES` と `js/model.js` に定義しています
+（現状はホットサマー【2025】のみ。破壊王【ハロウィン】・団結力系などは期待値計算の対象外）。
+
 ```bash
 node mhn/tools/build_data.mjs   # 公式サイトから再取得して data/*.json を更新
+node mhn/tools/build_extra.mjs  # 季節限定・コラボ装備の補完データ data/extra.json を更新
 npm test                        # mhn/test を含む全テスト
 npm run serve                   # http://localhost:8360/mhn/
 ```
