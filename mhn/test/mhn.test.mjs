@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { indexData, resolveWeapon, resolveArmor, mergeExtra, withCustom } from '../js/data.js';
+import { indexData, resolveWeapon, resolveArmor, mergeExtra, withCustom, styleTotals } from '../js/data.js';
 import { computeDamage } from '../js/calc.js';
 import { compileEvaluator } from '../js/fasteval.js';
 import { searchBuilds, evaluateBuild, isRelevant } from '../js/search.js';
@@ -184,6 +184,26 @@ test('手入力の装備: 追加すると計算・探索に使える', () => {
   const weapon = resolveWeapon(D.weaponById.ORE_SWORDSHIELD, 10, 5);
   const out = searchBuilds([weapon], { head: [{ ...a, drift: { mode: 'none' } }] }, { skillDefs: D2.skills, settings: {}, freeKinds: D.driftable, topN: 1 });
   assert.equal(out.results[0].eval.result.phys, 1912 + 300);
+});
+
+test('スタイル強化: 武器ごとのデータでLvに応じて上がる（リオレウス亜種の片手剣）', () => {
+  const w = D.weaponById.AZURE_RATHALOS_SWORDSHIELD;
+  assert.equal(w.style, true);
+  // Lv5: 属性12+19、攻撃18+28
+  assert.deepEqual(styleTotals({ level: 5, ms: {} }, w, D.styleProfiles), { level: 5, atk: 46, elem: 31, crit: 0 });
+  // Lv20: 4周分 + Lv10/15/20 で属性を選択（属性+100×3）
+  assert.deepEqual(styleTotals({ level: 20, ms: { 10: 'elem', 15: 'elem', 20: 'elem' } }, w, D.styleProfiles), { level: 20, atk: 184, elem: 424, crit: 0 });
+  // Lv10 の選択はLv10未満では効かない
+  assert.equal(styleTotals({ level: 9, ms: { 10: 'atk' } }, w, D.styleProfiles).atk, 46 + 18 + 28);
+  const r = resolveWeapon(w, 10, 5, styleTotals({ level: 20, ms: { 10: 'elem', 15: 'elem', 20: 'elem' } }, w, D.styleProfiles));
+  assert.equal(r.elem, 752 + 424);
+  // スタイル強化Lv10で解放されるスキル
+  assert.ok(r.skills.some(([k]) => k === 'SP_MOVE_BOOST_SECRET'));
+});
+
+test('スタイル強化: 公式でスタイル強化可能な武器はすべてデータに紐付いている', () => {
+  const missing = j('weapons').filter((w) => w.style && !D.weaponById[w.id].styleProfile).map((w) => w.name);
+  assert.deepEqual(missing, []);
 });
 
 test('取り込みツール: root-island の props を読める', () => {

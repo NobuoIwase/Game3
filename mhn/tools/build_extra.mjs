@@ -34,7 +34,7 @@ export function extractBootstrap(html) {
   return JSON.parse(m[1]);
 }
 
-const norm = (s) => String(s || '').replace(/[\s・＝=改]/g, '');
+const norm = (s) => String(s || '').replace(/[\s・＝=改ー－\-‐]/g, '').replace(/ノ/g, 'の');
 
 export function buildExtra(boot, official) {
   const officialNames = new Set();
@@ -101,7 +101,40 @@ export function buildExtra(boot, official) {
       }
     }
   }
-  return { source: SOURCE, fetched_at: new Date().toISOString(), series, weapons, armor, skills };
+  // スタイル強化: 武器ごとのプロファイル（各Lvの上昇値・Lv10/15/20 の選択肢の値）
+  const styleProfiles = {};
+  const styleMap = {};
+  const byName = {};
+  for (const w of [...official.weapons, ...weapons]) byName[norm(w.name)] = w.id;
+  for (const c of boot.equipCatalog) {
+    const d = boot.equipDetails[c.equip_key];
+    const cs = d && d.custom_style;
+    if (!cs || !cs.enabled) continue;
+    const key = cs.profile_key;
+    if (!styleProfiles[key]) {
+      styleProfiles[key] = {
+        name: cs.profile_name_ja,
+        max: cs.max_level,
+        milestones: cs.milestone_levels,
+        choices: Object.fromEntries((cs.choices || []).map((x) => [x.key, x.value])),
+        // [Lv, 攻撃+, 属性+, 会心+]
+        rules: (cs.level_rules || []).map((r) => [r.level_no, r.attack_add, r.element_add, r.affinity_add]).filter((r) => r[1] || r[2] || r[3]),
+      };
+    }
+    let id = byName[norm(d.equip_name_ja)];
+    if (!id) {
+      // 名前の表記ゆれで見つからないときは、武器種・属性と最大グレードの攻撃力・属性値が一致する武器
+      const type = WEAPON_TYPE[d.weapon_type];
+      const hits = official.weapons.filter((w) => {
+        const g = w.grades[10] || w.grades[Math.max(...Object.keys(w.grades).map(Number))];
+        const top = g.lv[g.lv.length - 1];
+        return w.type === type && w.element === (ELEMENT[d.element_type] ?? 'NO_ELEMENT') && top[0] === d.attack && top[1] === d.element_value && !styleMap[w.id];
+      });
+      if (hits.length === 1) id = hits[0].id;
+    }
+    if (id) styleMap[id] = key;
+  }
+  return { source: SOURCE, fetched_at: new Date().toISOString(), series, weapons, armor, skills, styleProfiles, styleMap };
 }
 
 async function main() {
@@ -113,7 +146,7 @@ async function main() {
   const official = { weapons: await j('weapons'), armor: await j('armor'), skills: (await j('skills')).skills };
   const extra = buildExtra(extractBootstrap(html), official);
   await writeFile(join(ROOT, 'data', 'extra.json'), JSON.stringify(extra));
-  console.log({ series: extra.series, weapons: extra.weapons.length, armor: extra.armor.length, skills: Object.values(extra.skills).map((s) => s.name) });
+  console.log({ series: extra.series, weapons: extra.weapons.length, armor: extra.armor.length, styleProfiles: Object.keys(extra.styleProfiles).length, styleMapped: Object.keys(extra.styleMap).length, skills: Object.values(extra.skills).map((s) => s.name) });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

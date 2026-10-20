@@ -8,7 +8,7 @@ export const EVENT_SKILL_VALUES = {
 
 export async function loadData(base = './data') {
   const [weapons, armor, skillData, meta, extra] = await Promise.all(
-    ['weapons', 'armor', 'skills', 'meta', 'extra'].map((n) => fetch(`${base}/${n}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null)),
+    ['weapons', 'armor', 'skills', 'meta', 'extra'].map((n) => fetch(`${base}/${n}.json?v=__V__`).then((r) => (r.ok ? r.json() : null)).catch(() => null)),
   );
   return indexData(mergeExtra({ weapons, armor, skills: skillData.skills, driftstones: skillData.driftstones, meta }, extra));
 }
@@ -20,10 +20,14 @@ export function mergeExtra(d, extra) {
   for (const [k, v] of Object.entries(extra.skills || {})) {
     if (!skills[k]) skills[k] = { ...v, eff: EVENT_SKILL_VALUES[k] || v.eff || [] };
   }
+  // スタイル強化データの紐付け（データがある武器はスタイル強化可能として扱う）
+  const styleMap = extra.styleMap || {};
+  const withStyle = (w) => (styleMap[w.id] ? { ...w, style: true, styleProfile: styleMap[w.id] } : w);
   return {
     ...d,
     skills,
-    weapons: [...d.weapons, ...(extra.weapons || [])],
+    styleProfiles: extra.styleProfiles || {},
+    weapons: [...d.weapons, ...(extra.weapons || [])].map(withStyle),
     armor: [...d.armor, ...(extra.armor || [])],
     extraMeta: { source: extra.source, fetched_at: extra.fetched_at, series: extra.series },
   };
@@ -50,6 +54,28 @@ export function withCustom(d, custom = []) {
     }
   }
   return indexData({ ...d, weapons, armor });
+}
+
+// スタイル強化 {level, ms:{10,15,20: 'atk'|'elem'|'crit'}, atk, elem} → 合計の上昇値
+// プロファイル（武器ごとのデータ）があれば Lv ごとの上昇値と選択肢の値をそこから取る。
+export function styleTotals(style, w, profiles = {}) {
+  if (!style || !w || !w.style) return null;
+  const level = Number(style.level) || 0;
+  const prof = w.styleProfile ? profiles[w.styleProfile] : null;
+  let atk = Number(style.atk) || 0;
+  let elem = Number(style.elem) || 0;
+  let crit = 0;
+  if (prof) for (const [lv, a, e, c] of prof.rules) if (lv <= level) { atk += a; elem += e; crit += c; }
+  const ailment = ['POISON', 'PARALYSIS', 'SLEEP', 'BLAST'].includes(w.element);
+  const val = (k, fb) => (prof && prof.choices[k] !== undefined ? prof.choices[k] : fb);
+  for (const m of [10, 15, 20]) {
+    if (level < m) continue;
+    const c = style.ms && style.ms[m];
+    if (c === 'atk') atk += val('Attack', 100);
+    else if (c === 'crit') crit += val('Critical', 10);
+    else if (c === 'elem') elem += val('Element', ailment ? 50 : 100);
+  }
+  return { level, atk, elem, crit };
 }
 
 export function indexData(d) {

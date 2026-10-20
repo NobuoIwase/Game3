@@ -1,5 +1,5 @@
 // 探索を UI スレッドから切り離して実行する Web Worker
-import { searchBuilds } from './search.js';
+import { searchBuilds } from './search.js?v=__V__';
 
 let skillDefs = null;
 
@@ -8,7 +8,7 @@ self.onmessage = async (ev) => {
   try {
     if (msg.skillDefs) skillDefs = msg.skillDefs;
     if (!skillDefs) {
-      const res = await fetch(new URL('../data/skills.json', import.meta.url));
+      const res = await fetch(new URL('../data/skills.json?v=__V__', import.meta.url));
       skillDefs = (await res.json()).skills;
     }
     const out = searchBuilds(msg.weapons, msg.partOptions, {

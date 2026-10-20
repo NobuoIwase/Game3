@@ -32,5 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: mhn/ の読み込みURLにバージョンを付ける（ブラウザ・CDNの古いキャッシュ対策）
+        run: |
+          V="${GITHUB_SHA::8}"
+          sed -i "s/__V__/${V}/g" mhn/index.html mhn/js/*.js
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git commit -am "deploy: mhn version ${V}" || true
       - name: main の内容を gh-pages へミラー
         run: git push origin HEAD:gh-pages --force

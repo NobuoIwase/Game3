@@ -1,7 +1,7 @@
-import { loadData, resolveWeapon, resolveArmor, gradesOf, withCustom } from './data.js';
-import { WEAPON_TYPES, ELEMENTS, PARTS, PART_NAMES, SKILL_EFFECTS, AILMENT_ELEMENTS, conditionalSkills, defaultRate } from './model.js';
-import { evaluateBuild, isRelevant } from './search.js';
-import { esc, elemIcon, weaponTypeIcon, armorIcon, weaponIcon, openSheet, closeSheet, setUiData } from './ui.js';
+import { loadData, resolveWeapon, resolveArmor, gradesOf, withCustom, styleTotals as calcStyleTotals } from './data.js?v=__V__';
+import { WEAPON_TYPES, ELEMENTS, PARTS, PART_NAMES, SKILL_EFFECTS, AILMENT_ELEMENTS, conditionalSkills, defaultRate } from './model.js?v=__V__';
+import { evaluateBuild, isRelevant } from './search.js?v=__V__';
+import { esc, elemIcon, weaponTypeIcon, armorIcon, weaponIcon, openSheet, closeSheet, setUiData } from './ui.js?v=__V__';
 
 const STORE_KEY = 'mhn-calc-v1';
 const DRIFT_MODES = { free: '自由（フル錬成）', owned: '所持リストから', fixed: '固定', none: '錬成なし' };
@@ -78,21 +78,9 @@ const weaponGear = (id) => S.gear.weapons[id] || {};
 const armorGear = (id) => S.gear.armor[id] || {};
 
 // スタイル強化 {level, ms:{10,15,20}, atk, elem} → 合計値
-function styleTotals(style, w) {
-  if (!style || !w || !w.style) return null;
-  const level = Number(style.level) || 0;
-  let atk = Number(style.atk) || 0;
-  let elem = Number(style.elem) || 0;
-  let crit = 0;
-  for (const m of STYLE_MS) {
-    if (level < m) continue;
-    const c = style.ms && style.ms[m];
-    if (c === 'atk') atk += 100;
-    else if (c === 'crit') crit += 10;
-    else if (c === 'elem') elem += AILMENT_ELEMENTS.includes(w.element) ? 50 : 100;
-  }
-  return { level, atk, elem, crit };
-}
+// 武器ごとのスタイル強化データ（Lvごとの上昇値・Lv10/15/20の選択肢の値）
+const styleProfileOf = (w) => (w && D.styleProfiles && w.styleProfile ? D.styleProfiles[w.styleProfile] : null);
+const styleTotals = (style, w) => calcStyleTotals(style, w, D.styleProfiles);
 function weaponStyle(w) {
   const g = weaponGear(w.id);
   if (g.style) return g.style;
@@ -168,15 +156,18 @@ function skillOptions(selected, driftFirst = true) {
 }
 
 function styleBox(id, style, w) {
-  const showElem = !w || w.element !== 'NO_ELEMENT';
+  const prof = styleProfileOf(w);
+  const showElem = prof ? prof.choices.Element !== undefined : (!w || w.element !== 'NO_ELEMENT');
+  const tot = w ? styleTotals(style, w) : null;
   return `<div class="style-box" id="${id}">
     <div class="style-top"><b>スタイル強化</b><span class="style-lv">Lv <strong>${style.level || 0}</strong></span></div>
     <input type="range" min="0" max="20" step="1" value="${style.level || 0}" class="style-range">
     <div class="style-ms">${STYLE_MS.map((m) => `<div class="ms${(style.level || 0) >= m ? '' : ' off'}"><div class="ms-t">Lv${m}</div>
       ${[['atk', '物理'], ...(showElem ? [['elem', '属性']] : []), ['crit', '会心']].map(([c, l]) => `<button type="button" class="ms-b${style.ms && style.ms[m] === c ? ' on' : ''}" data-m="${m}" data-c="${c}">${l}</button>`).join('')}</div>`).join('')}</div>
-    <div class="row small"><label>Lv上昇分 攻撃+<input type="number" class="narrow st-atk" value="${style.atk || 0}"></label>
-      <label>属性+<input type="number" class="narrow st-elem" value="${style.elem || 0}"></label></div>
-    <p class="note">Lv10/15/20 の選択は 物理+100・会心+10%・属性+100（状態異常武器は+50）で計算。各Lvの細かい上昇分はゲーム画面の値を「Lv上昇分」に入れてください。</p>
+    ${tot ? `<div class="small">この武器の上昇: 攻撃 <b>+${tot.atk}</b>${tot.elem ? `・属性 <b>+${tot.elem}</b>` : ''}${tot.crit ? `・会心 <b>+${tot.crit}%</b>` : ''}${prof ? `（${esc(prof.name)}）` : ''}</div>` : ''}
+    <details class="small"><summary>追加補正（通常は0）</summary><div class="row"><label>攻撃+<input type="number" class="narrow st-atk" value="${style.atk || 0}"></label>
+      <label>属性+<input type="number" class="narrow st-elem" value="${style.elem || 0}"></label></div></details>
+    <p class="note">Lvを上げると、その武器のスタイル強化データに沿って攻撃・属性が自動で上がります。Lv10/15/20の選択肢の値も武器ごと（例: 物理+100・会心+10%・属性+100／状態異常+50）。${w ? '' : '武器を指定しない検索では、スタイル強化できる武器それぞれにこのLv・選択を適用します。'}</p>
   </div>`;
 }
 function bindStyleBox(root, id, style, onChange) {
@@ -409,7 +400,7 @@ function runSearch() {
   if (!input.weapons.length) { status.textContent = '対象の武器がありません（「所持装備のみ」の場合は所持登録を確認してください）'; return; }
   lastStatus = '';
   if (worker) worker.terminate();
-  worker = new Worker(new URL('./search_worker.js', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./search_worker.js?v=__V__', import.meta.url), { type: 'module' });
   const btn = $('#s-run');
   btn.disabled = true;
   status.textContent = `検索中…（武器 ${input.weapons.length} 本）`;
