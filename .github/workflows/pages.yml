@@ -14,8 +14,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: game3-publication
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -32,6 +32,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: mhn/ の読み込みURLにバージョンを付ける（ブラウザ・CDNの古いキャッシュ対策）
         run: |
           V="${GITHUB_SHA::8}"
@@ -40,4 +45,4 @@ jobs:
           git config user.email "github-actions@users.noreply.github.com"
           git commit -am "deploy: mhn version ${V}" || true
       - name: main の内容を gh-pages へミラー
-        run: git push origin HEAD:gh-pages --force
+        run: node tools/publish-pages.mjs

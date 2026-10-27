@@ -1,7 +1,7 @@
-import { loadData, resolveWeapon, resolveArmor, gradesOf, withCustom, styleTotals as calcStyleTotals } from './data.js?v=__V__';
-import { WEAPON_TYPES, ELEMENTS, PARTS, PART_NAMES, SKILL_EFFECTS, AILMENT_ELEMENTS, conditionalSkills, defaultRate } from './model.js?v=__V__';
-import { evaluateBuild, isRelevant } from './search.js?v=__V__';
-import { esc, elemIcon, weaponTypeIcon, armorIcon, weaponIcon, openSheet, closeSheet, setUiData } from './ui.js?v=__V__';
+import { loadData, resolveWeapon, resolveArmor, gradesOf, withCustom, styleTotals as calcStyleTotals } from './data.js?v=19eb3aa0';
+import { WEAPON_TYPES, ELEMENTS, PARTS, PART_NAMES, SKILL_EFFECTS, AILMENT_ELEMENTS, conditionalSkills, defaultRate } from './model.js?v=19eb3aa0';
+import { evaluateBuild, isRelevant } from './search.js?v=19eb3aa0';
+import { esc, elemIcon, weaponTypeIcon, armorIcon, weaponIcon, openSheet, closeSheet, setUiData } from './ui.js?v=19eb3aa0';
 
 const STORE_KEY = 'mhn-calc-v1';
 const DRIFT_MODES = { free: '自由（フル錬成）', owned: '所持リストから', fixed: '固定', none: '錬成なし' };
@@ -400,7 +400,7 @@ function runSearch() {
   if (!input.weapons.length) { status.textContent = '対象の武器がありません（「所持装備のみ」の場合は所持登録を確認してください）'; return; }
   lastStatus = '';
   if (worker) worker.terminate();
-  worker = new Worker(new URL('./search_worker.js?v=__V__', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./search_worker.js?v=19eb3aa0', import.meta.url), { type: 'module' });
   const btn = $('#s-run');
   btn.disabled = true;
   status.textContent = `検索中…（武器 ${input.weapons.length} 本）`;

@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: update-data
+  group: game3-publication
   cancel-in-progress: false
 
 jobs:
@@ -29,6 +29,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          # 公開先の履歴も取得し、shallow checkout からの push を避ける。
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -41,16 +43,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add game_data
-          if git diff --cached --quiet; then
-            echo "変更なし"
-            exit 0
-          fi
           # meta.json 以外に変化があれば実データの更新。meta.json だけなら
           # 「確認したが新規なし」の記録（checked_at）を公開する — §28
-          if git diff --cached --name-only | grep -qv '^game_data/meta.json$'; then
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          elif git diff --cached --name-only | grep -qv '^game_data/meta.json$'; then
             git commit -m "ゲームデータを更新（新キャラ・新フラグメントの取り込み）"
           else
             git commit -m "データ確認（新規なし）"
           fi
-          git push origin HEAD:main
-          git push origin HEAD:gh-pages --force
+          # 変更なしでも前回失敗した公開を回復する。2ブランチを一括更新する。
+          node tools/publish-pages.mjs --update-main
