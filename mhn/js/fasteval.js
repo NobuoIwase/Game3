@@ -2,8 +2,8 @@
 // 「スキル×Lv → 各項への寄与」の表を前計算して数値配列だけで計算する。
 // （computeDamage と結果が一致することはテストで確認している）
 
-import { SKILL_EFFECTS, DAMAGE_ELEMENTS } from './model.js?v=19eb3aa0';
-import { effectValue, rateOf, BASE_CRIT_MUL, NEG_CRIT_MUL } from './calc.js?v=19eb3aa0';
+import { SKILL_EFFECTS, DAMAGE_ELEMENTS } from './model.js?v=__V__';
+import { effectValue, rateOf, BASE_CRIT_MUL, NEG_CRIT_MUL } from './calc.js?v=__V__';
 
 const TERMS = ['atkPct', 'atkFlat', 'atkActive', 'dmgPct', 'crit', 'elemFlat', 'elemPct', 'critElem', 'elder'];
 const TI = Object.fromEntries(TERMS.map((t, i) => [t, i]));

@@ -9,7 +9,7 @@
 //
 // 条件付きスキルは「効果量 × 発動率」で按分する（線形近似）。
 
-import { SKILL_EFFECTS, DAMAGE_ELEMENTS, defaultRate } from './model.js?v=19eb3aa0';
+import { SKILL_EFFECTS, DAMAGE_ELEMENTS, defaultRate } from './model.js?v=__V__';
 
 export const BASE_CRIT_MUL = 125;
 export const NEG_CRIT_MUL = 75;
