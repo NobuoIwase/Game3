@@ -14,9 +14,9 @@
 // 錬成の割り当ては、まず必須スキルを満たし、残りを 1スロットあたりの期待値上昇が最大になる
 // 「スキル×Lv数」のまとまりから貪欲に選ぶ。
 
-import { computeDamage, sumSkills, rateOf } from './calc.js?v=__V__';
-import { SKILL_EFFECTS, DAMAGE_ELEMENTS, PARTS } from './model.js?v=__V__';
-import { compileEvaluator } from './fasteval.js?v=__V__';
+import { computeDamage, sumSkills, rateOf } from './calc.js?v=19eb3aa0';
+import { SKILL_EFFECTS, DAMAGE_ELEMENTS, PARTS } from './model.js?v=19eb3aa0';
+import { compileEvaluator } from './fasteval.js?v=19eb3aa0';
 
 const NON_MONOTONE = new Set(['ATTACK_UP_CRITICAL_DOWN', 'BRUTAL_STRIKE', 'POWERHOUSE_CRITICAL']);
 

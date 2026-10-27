@@ -8,7 +8,7 @@ export const EVENT_SKILL_VALUES = {
 
 export async function loadData(base = './data') {
   const [weapons, armor, skillData, meta, extra] = await Promise.all(
-    ['weapons', 'armor', 'skills', 'meta', 'extra'].map((n) => fetch(`${base}/${n}.json?v=__V__`).then((r) => (r.ok ? r.json() : null)).catch(() => null)),
+    ['weapons', 'armor', 'skills', 'meta', 'extra'].map((n) => fetch(`${base}/${n}.json?v=19eb3aa0`).then((r) => (r.ok ? r.json() : null)).catch(() => null)),
   );
   return indexData(mergeExtra({ weapons, armor, skills: skillData.skills, driftstones: skillData.driftstones, meta }, extra));
 }
