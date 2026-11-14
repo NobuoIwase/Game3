@@ -114,3 +114,22 @@ test('a shallow checkout is rejected before any publication', t => {
   assert.equal(f.ref('main'), f.initial);
   assert.equal(f.ref('gh-pages'), f.initial);
 });
+
+test('publication verifies both remote refs after an ambiguous server error', t => {
+  const f = fixture(t);
+  const source = f.commit('accepted despite response error');
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const bin = join(f.root, 'bin');
+  mkdirSync(bin);
+  const wrapper = join(bin, 'git');
+  writeFileSync(wrapper, `#!/bin/sh\n"${realGit}" "$@"\nstatus=$?\nif [ "$1" = push ] && [ "$status" = 0 ]; then echo 'Internal Server Error' >&2; exit 1; fi\nexit "$status"\n`);
+  chmodSync(wrapper, 0o755);
+  const result = spawnSync(process.execPath, [publisher, '--update-main'], {
+    cwd: f.work, encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GITHUB_STEP_SUMMARY: '' },
+  });
+  f.success(result);
+  assert.match(result.stderr, /both remote refs match/);
+  assert.equal(f.ref('main'), source);
+  assert.equal(f.ref('gh-pages^{tree}'), f.ref('main^{tree}'));
+});

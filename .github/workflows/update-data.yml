@@ -36,6 +36,14 @@ jobs:
           node-version: 22
       - name: 新キャラ・新フラグを差分取得
         run: node tools/crawl_dblegends.mjs --update
+      - name: 取得失敗の診断を保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-diagnostics
+          path: game_data/crawl/failures.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: テスト
         run: npm test
       - name: コミットして配信
