@@ -33,8 +33,20 @@ if (tree !== git('rev-parse', `${pages}^{tree}`)) {
 const mainTarget = args.includes('--update-main') ? source : main;
 // Including main even when unchanged rejects a concurrent update to either
 // branch. A failed publication must not leave only main updated again.
-git('push', '--atomic', 'origin',
-  `${mainTarget}:refs/heads/main`, `${published}:refs/heads/gh-pages`);
+try {
+  git('push', '--atomic', 'origin',
+    `${mainTarget}:refs/heads/main`, `${published}:refs/heads/gh-pages`);
+} catch (error) {
+  // GitHub can return 500 after accepting both refs. Verify before retrying:
+  // never overwrite a concurrent update or pretend a rejected push succeeded.
+  const remote = new Map(git('ls-remote', 'origin',
+    'refs/heads/main', 'refs/heads/gh-pages').split('\n')
+    .filter(Boolean).map(line => { const [sha, ref] = line.split(/\s+/); return [ref, sha]; }));
+  if (remote.get('refs/heads/main') !== mainTarget ||
+      remote.get('refs/heads/gh-pages') !== published) throw error;
+  console.warn('Push reported an error, but both remote refs match the intended commits.');
+  console.warn('Branch storage is verified; this does not verify the live Pages deployment.');
+}
 const summary = `Source commit: ${source}\nMain commit: ${mainTarget}\nPages commit: ${published}\n`;
 console.log(summary);
 if (process.env.GITHUB_STEP_SUMMARY) {
