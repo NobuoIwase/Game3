@@ -306,3 +306,33 @@ test('§35 アーツ系のサイト内タグが大量に付いている', async 
     assert.ok(n > 100, `${tag} が ${n} 体しかない（アーツ本文の欠落を疑う）`);
   }
 });
+
+test('parseEquipPage: redesigned calcdata pages retain ranges, conditions and eligibility', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { parseEquipPage } = await import('../tools/crawl_dblegends.mjs');
+  const parsed = {};
+  for (const [id, count] of [[1174, 54], [1175, 193], [33001, 1], [50216, 28]]) {
+    const html = await readFile(new URL(`./fixtures/equip-${id}-redesign.html`, import.meta.url), 'utf8');
+    const r = parsed[id] = parseEquipPage(html, id);
+    assert.equal(r.slots.length, 3);
+    assert.equal(r.equip_char_ids.length, count);
+    assert.ok(r.rarity_label);
+    assert.ok(r.condition_text);
+    assert.ok(r.slots.every(s => s.lines.length > 0));
+  }
+  assert.deepEqual(parsed[1174].slots[0].lines, [{ text: '基礎射撃防御力', value: 15, value_min: 5 }]);
+  assert.equal(parsed[1175].condition_text, '合体戦士 OR 劇場版編');
+  assert.equal(parsed[33001].condition_text, 'ゴジータ AND DBL42-01U');
+  assert.deepEqual(parsed[33001].equip_char_ids, [454]);
+  assert.equal(parsed[33001].slots[0].lines[0].value, 30);
+  assert.equal(parsed[50216].slots[1].lines[2].raw, '自身の打撃・射撃防御力を8.00% ~ 15.00%アップ');
+});
+
+test('parseEquipPage: calcdata preserves alternative options and rejects missing ranges', async () => {
+  const { parseEquipPage } = await import('../tools/crawl_dblegends.mjs');
+  const page = slots => `<h1 class="eqd-name">test</h1><script id="calcdata" type="application/json">${JSON.stringify({ slots })}</script>`;
+  const options = [5, 10].map(max => ({ effects: [{ name: '基礎体力 {0}%', min: 1, max }] }));
+  const r = parseEquipPage(page({ 1: { options } }), 1);
+  assert.deepEqual(r.slots[0].lines, [{ raw: '基礎体力 1% ~ 5%', option: 1 }, { raw: '基礎体力 1% ~ 10%', option: 2 }]);
+  assert.throws(() => parseEquipPage(page({ 1: { options: [{ effects: [{ name: '基礎体力 {0}%' }] }] } }), 1), /効果範囲/);
+});

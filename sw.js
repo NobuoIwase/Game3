@@ -2,7 +2,7 @@
 // 方針: stale-while-revalidate。キャッシュがあれば即返し、裏で更新する。
 // game_data の更新を確実に反映したいときは「データ」タブの「キャッシュを更新」を使う。
 
-const CACHE = 'dbl-frag-opt-v46';
+const CACHE = 'dbl-frag-opt-v47';
 
 const PRECACHE = [
   './',
@@ -49,6 +49,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  // 同じリポジトリで配信している別アプリ（mhn/ モンハンNow計算）はキャッシュしない
+  if (new URL(req.url).pathname.includes('/mhn/')) return;
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(req);

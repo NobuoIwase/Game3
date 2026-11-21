@@ -382,7 +382,7 @@ export function parseEquipPage(html, id) {
   const name = (html.match(/class="eqd-name">([^<]+)</) || [])[1];
   if (!name) throw new Error('eqd-name が見つかりません');
   const rarity = (html.match(/eqx-frame\s+([\w-]+)/) || [])[1] || '';
-  const detail = (html.match(/class="eqd-detail">(.*?)<\/div>/s) || [])[1] || '';
+  const detail = (html.match(/class="eqd-detail">(.*?)<\/div>/s) || html.match(/class="eqd-desc">(.*?)<\/p>/s) || [])[1] || '';
   const rarityLabel = decodeEntities(detail.split(/<br\s*\/?\s*>/)[0] || '').trim();
   const icon = (html.match(/class="eqx-art" src="([^"]+)"/) || [])[1] || '';
 
@@ -416,14 +416,49 @@ export function parseEquipPage(html, id) {
     }
     slots.push({ label, star7, lines });
   }
+  // The redesigned page renders the same abilities from calcdata. Preserve
+  // each effect's line breaks and option identity for conditional parsing.
+  if (slots.length === 0) {
+    const calc = scriptJSON(html, 'calcdata');
+    for (const [number, slot] of Object.entries(calc?.slots || {})) {
+      if (!/^[1-4]$/.test(number) || !Array.isArray(slot.options)) {
+        throw new Error('不正な calcdata スロット');
+      }
+      const lines = slot.options.flatMap((option, i) => {
+        if (!Array.isArray(option.effects)) throw new Error('不正な calcdata 効果');
+        return option.effects.flatMap(effect => {
+          if (typeof effect.name !== 'string') throw new Error('不正な calcdata 効果名');
+          let raw = effect.name;
+          if (raw.includes('{0}')) {
+            if (effect.min == null || effect.max == null ||
+                !Number.isFinite(Number(effect.min)) || !Number.isFinite(Number(effect.max))) {
+              throw new Error('不正な calcdata 効果範囲');
+            }
+            raw = raw.replaceAll('{0}', `${effect.min}% ~ ${effect.max}`);
+          }
+          return decodeEntities(raw).split(/\r?\n/).filter(Boolean)
+            .filter(line => !line.includes('【★7で解放】'))
+            .map(line => slot.options.length > 1 ? { raw: line, option: i + 1 } : classifyLine(line))
+            .filter(Boolean);
+        });
+      });
+      slots.push({ label: `SLOT ${number}`, star7: number === '4', lines });
+    }
+  }
   if (slots.length === 0) throw new Error('eqd-slot が見つかりません');
 
   // 装備条件（表示用の生テキスト）
   const condHtml = (html.match(/class="eqd-condgroups">(.*?)<\/div>\s*<\/div>/s) || [])[1] || '';
-  const condition_text = decodeEntities(condHtml.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  let condition_text = decodeEntities(condHtml.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  if (!condition_text) {
+    condition_text = [...html.matchAll(/class="eqd-grp">([\s\S]*?)<\/div>/g)]
+      .map(group => [...group[1].matchAll(/class="eqd-chip[^"]*"[^>]*>([^<]+)<\/a>/g)]
+        .map(chip => decodeEntities(chip[1]).trim()).join(' AND '))
+      .filter(Boolean).join(' OR ');
+  }
 
   // 装備可能キャラID（条件のAND/ORを解析する代わりにサイトの解決済み一覧を使う）
-  const charListHtml = (html.match(/id="eqdCharList"(.*?)<\/main>/s) || [])[1] || '';
+  const charListHtml = (html.match(/id="(?:eqdCharList|cgrid)"(.*?)<\/main>/s) || [])[1] || '';
   const equip_char_ids = [...new Set(
     [...charListHtml.matchAll(/href="\/?character\/(\d+)"/g)].map((x) => Number(x[1]))
   )];
@@ -1007,8 +1042,10 @@ async function main() {
       }
       if (++done % 25 === 0) console.log(`${done}/${work.length} 完了`);
     }
+    // Always replace diagnostics, including after a successful retry.
+    await writeFile(join(CRAWL, 'failures.json'), JSON.stringify(failures, null, 1));
     if (failures.length) {
-      await writeFile(join(CRAWL, 'failures.json'), JSON.stringify(failures, null, 1));
+      for (const failure of failures) console.error(`取得失敗: /${failure.kind === 'char' ? 'character' : 'equip'}/${failure.id}: ${failure.error}`);
       console.error(`⚠ ${failures.length} ページで失敗（game_data/crawl/failures.json 参照）`);
     }
   }

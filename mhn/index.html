@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2f6b4f">
+  <title>MHN 装備計算</title>
+  <link rel="stylesheet" href="./css/style.css?v=__V__">
+</head>
+<body>
+  <header class="top">
+    <h1>MHN 装備計算</h1>
+    <p class="sub">モンハンNow ダメージ期待値・装備構築（個人用）</p>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="search" class="on">装備構成検索</button>
+    <button data-tab="build">装備構成</button>
+    <button data-tab="gear">所持・錬成</button>
+    <button data-tab="settings">設定</button>
+  </nav>
+
+  <main>
+    <section id="tab-search" class="tab"></section>
+    <section id="tab-build" class="tab" hidden></section>
+    <section id="tab-gear" class="tab" hidden></section>
+    <section id="tab-settings" class="tab" hidden></section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./js/app.js?v=__V__"></script>
+</body>
+</html>
