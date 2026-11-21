@@ -14,6 +14,7 @@ import {
 import * as store from './store.js';
 import { placeChar, stillInParty, proudLeadersOf, sanitizeThird, PROUD_PER_TEAM_MAX } from './party_rules.js';
 import * as FR from './frag_rank.js';
+import { isKnownRarity } from './rarity.js';
 import { parseCharacterListHTML, parseTagSelectHTML } from './parser.js';
 
 // ---------------------------------------------------------------- 状態
@@ -678,7 +679,7 @@ function checkRarities(fragIds) {
   if (known.length === 0) return true;
   for (const id of fragIds) {
     const f = fragDef(id);
-    if (f && f.rarity && !known.includes(f.rarity)) {
+    if (f && f.rarity && !isKnownRarity(f.rarity, known)) {
       showMsg('error',
         `■ 未知のレアリティ「${f.rarity}」を検出しました（フラグメント: ${f.name}）\n` +
         '計算を中止しました。game_data/config.json の known_rarities への追加が必要です。');
@@ -2664,7 +2665,7 @@ const RARITY_LABELS = {
   iron: 'アイアン', bronze: 'ブロンズ', silver: 'シルバー', gold: 'ゴールド',
   platinum: 'プラチナ', unique: 'ユニーク', event: 'イベント',
   awakenedbronze: '覚醒ブロンズ', awakenedsilver: '覚醒シルバー',
-  awakenedgold: '覚醒ゴールド', awakenedunique: '覚醒ユニーク', rainbow: 'レインボー',
+  awakenedgold: '覚醒ゴールド', awakenedplatinum: '覚醒プラチナ', awakenedunique: '覚醒ユニーク', rainbow: 'レインボー',
 };
 
 /** フラグタブ上部の「一覧／オススメ」切替（§49） */

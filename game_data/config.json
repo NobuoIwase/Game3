@@ -4,11 +4,12 @@
     "asset_base: キャラ・フラグメント画像の参照元。画像はリポジトリに同梱せず表示時に参照する",
     "（公開リポジトリにゲームアートを再配布しないため。個人利用の範囲で参照すること）。",
     "known_rarities が空でない場合、リストに無いレアリティのフラグメントを検出したら計算を中止する。",
-    "空の場合はレアリティチェックを行わない。"
+    "空の場合はレアリティチェックを行わない。",
+    "「awakened + 既知のレアリティ」（例: awakenedplatinum）は一覧に無くても既知とみなす（DESIGN.md §50）。"
   ],
   "asset_base": "https://jp.dblegends.net",
   "known_rarities": [
     "iron", "bronze", "silver", "gold", "platinum", "unique", "event",
-    "awakenedbronze", "awakenedsilver", "awakenedgold", "awakenedunique"
+    "awakenedbronze", "awakenedsilver", "awakenedgold", "awakenedplatinum", "awakenedunique"
   ]
 }

@@ -21,6 +21,7 @@
   --fr-gold: #d9a93c; --fr-awakenedgold: #e8863c; --fr-platinum: #8fc3dd;
   --fr-unique: #b06de0; --fr-event: #4db85f; --fr-rainbow: #d76fd0;
   --fr-awakenedbronze: #cd8a4a; --fr-awakenedsilver: #aebfcc; --fr-awakenedunique: #cf8af0;
+  --fr-awakenedplatinum: #6fd6f2;
   --fr-default: #9a9da5;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -299,6 +300,7 @@ td.num { font-variant-numeric: tabular-nums; }
 .frag-slot.fr-awakenedbronze { border-color: var(--fr-awakenedbronze); }
 .frag-slot.fr-awakenedsilver { border-color: var(--fr-awakenedsilver); }
 .frag-slot.fr-awakenedunique { border-color: var(--fr-awakenedunique); }
+.frag-slot.fr-awakenedplatinum { border-color: var(--fr-awakenedplatinum); }
 
 /* ============ フラグメントグリッド ============ */
 .frag-grid {
@@ -320,6 +322,7 @@ td.num { font-variant-numeric: tabular-nums; }
 .frag-tile.fr-awakenedbronze { border-color: var(--fr-awakenedbronze); }
 .frag-tile.fr-awakenedsilver { border-color: var(--fr-awakenedsilver); }
 .frag-tile.fr-awakenedunique { border-color: var(--fr-awakenedunique); }
+.frag-tile.fr-awakenedplatinum { border-color: var(--fr-awakenedplatinum); }
 .frag-tile .count-badge {
   position: absolute; bottom: 1px; right: 1px; font-size: 10px; font-weight: 900;
   background: rgba(10,10,16,.88); color: #ffc24d; border-radius: 5px; padding: 0 4px;
