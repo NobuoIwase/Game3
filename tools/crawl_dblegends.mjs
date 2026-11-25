@@ -339,6 +339,15 @@ export function parseCharacterPage(html, id) {
     tag_names: tr,
     stats: st(d.max),        // Lv5000 の基本ステータス（ブースト除く想定 → ❶ に相当）
     soul_max: st(d.soul),    // ソウルブースト最大値（ブースト値の既定値に使う）
+    // ★（限界突破）・ZENKAIレベルでステータスを計算するための素データ（§51）。
+    // 参照サイトの計算式: ((Lv補間(min,max) + ソウル + min) × (1+限界突破率[★])) を、
+    // ZENKAI時は倍率 pl で掛けて ex[ZENKAIレベル-1] を足す
+    stat_curve: {
+      min: st(d.min),
+      max: st(d.max),
+      ex: (d.ex || []).map((e) => st(e)),
+      pl: d.pl && d.pl['0'] ? st(d.pl['0']) : null,
+    },
     z_ability: abilityTexts((d.ab || {}).z),        // ZアビリティI〜IV
     deploy_z_ability: abilityTexts((d.ab || {}).llz), // 出撃ZアビリティI〜IV
     zenkai_ability: abilityTexts((d.ab || {}).p),   // ZENKAI系（無ければ空）
@@ -762,6 +771,7 @@ async function merge() {
       tags: [...new Set(detail?.tags?.length ? detail.tags : meta.tags)],
       stats: detail?.stats || Object.fromEntries(STATS.map((s) => [s, 0])),
       soul_max: detail?.soul_max || Object.fromEntries(STATS.map((s) => [s, 0])),
+      stat_curve: detail?.stat_curve || null,
       z_ability: detail?.z_ability || [],
       deploy_z_ability: detail?.deploy_z_ability || [],
       zenkai_ability: detail?.zenkai_ability || [],
@@ -994,6 +1004,8 @@ async function main() {
       try {
         const cached = JSON.parse(await readFile(cp, 'utf8'));
         if (c.zenkai && !(cached.zenkai_ability || []).length) refresh.add(String(c.id));
+        // ★・ZENKAIレベル計算用の素データが無い（§51 より前に取得した）キャラも取り直す
+        else if (!cached.stat_curve) refresh.add(String(c.id));
       } catch { refresh.add(String(c.id)); }
     }
     const zenkaiGap = refresh.size;
@@ -1003,7 +1015,7 @@ async function main() {
       for (let i = 0; i < roll; i++) refresh.add(String(chars[((slot * roll) + i) % chars.length].id));
     }
     if (refresh.size) {
-      console.log(`既存キャラの再取得: ${refresh.size} 体（うちZENKAI覚醒の取りこぼし ${zenkaiGap} 体）`);
+      console.log(`既存キャラの再取得: ${refresh.size} 体（うちZENKAI覚醒・ステータス素データの取りこぼし ${zenkaiGap} 体）`);
     }
 
     const failures = [];

@@ -1118,7 +1118,7 @@ function renderParty() {
                     el('span', { class: 'badge ok' }, TEAM_LABELS[t]), ` ${STAT_LABELS[ui.displayStat]} `,
                     el('span', { class: 'v' }, fmt0(tst.final)),
                     ' ',
-                    el('span', { class: 'up' }, `フラグ換算 +${fmt(tst.fragTotal, 1)}% / 補正 +${fmt(tst.corr5, 0)}%`))
+                    el('span', { class: 'up' }, `フラグ換算 +${fmt(Math.abs(tst.fragTotal) < 0.05 ? 0 : tst.fragTotal, 1)}% / 補正 +${fmt(tst.corr5, 0)}%`))
                 : null;
             })
           : st
@@ -1126,7 +1126,7 @@ function renderParty() {
               `${STAT_LABELS[ui.displayStat]} `,
               el('span', { class: 'v' }, fmt0(st.final)),
               ' ',
-              el('span', { class: 'up' }, `フラグ換算 +${fmt(st.fragTotal, 1)}% / 補正 +${fmt(st.corr5, 0)}%`))
+              el('span', { class: 'up' }, `フラグ換算 +${fmt(Math.abs(st.fragTotal) < 0.05 ? 0 : st.fragTotal, 1)}% / 補正 +${fmt(st.corr5, 0)}%`))
           : el('div', { class: 'm-stats' }, el('span', { class: 'small-note' }, 'ステータス未取得')),
         // 与ダメージ（§44）。ステータスとは別枠で全ソース加算される戦闘補正なので、
         // ❸ にも採点にも入れず、情報として%だけ出す
