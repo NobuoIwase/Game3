@@ -1331,3 +1331,31 @@ test('§47 実際に所持数を超えて欲しがるときは従来どおり奪
   const used = Object.values(r.assignments).filter((a) => a.ids.includes('100')).length;
   assert.equal(used, 2, '所持2枚を超えて配らない');
 });
+
+// §51: ★（限界突破）・ZENKAIレベルでステータスが変わる。参照サイトの計算式を移植したもの。
+// 期待値は DBL34-01S（超サイヤ人4 孫悟空）の実データで、参照サイトと同じ式・同じ丸めで出した値
+test('§51 ★とZENKAIレベルで合計ステが変わる（参照サイトの式）', async () => {
+  const { curveStat, statBase, STAR_RATE } = await import('../js/optimizer.js');
+  const ch = {
+    id: 388, zenkai: true, soul_max: { strike_atk: 27939 },
+    stat_curve: {
+      min: { strike_atk: 2590 }, max: { strike_atk: 261569 },
+      ex: [{ strike_atk: 2588 }, { strike_atk: 5627 }, { strike_atk: 8768 }, { strike_atk: 12290 }, { strike_atk: 15918 }, { strike_atk: 19794 }, { strike_atk: 24222 }],
+      pl: { strike_atk: 10004 },
+    },
+  };
+  const at = (stars, zl, extra = {}) => curveStat(ch, { stars, zenkai_lv: zl, boost: { strike_atk: 27939 }, ...extra }, 'strike_atk');
+  assert.equal(STAR_RATE[14], 0.36);
+  assert.equal(at(0, 0).total, 186175);
+  assert.equal(at(14, 0, { zenkai_level: 0 }).total, 253198, '★14 は ★0 の約1.36倍');
+  assert.equal(at(14, 7).total, 277521, 'ZENKAIレベル7で追加ステと倍率が乗る');
+  assert.equal(at(6, 7).total, at(6, 0).total, 'ZENKAIは★7未満では乗らない（§38）');
+  let prev = 0;
+  for (let s = 0; s <= 14; s++) { const v = at(s, 0, { zenkai_level: 0 }).total; assert.ok(v >= prev, `★${s} で下がらない`); prev = v; }
+  // ブースト（ソウル＋ZENKAI追加ステ）は ❶ から分ける
+  const z = at(14, 7);
+  assert.equal(z.base + z.boost, z.total);
+  // 実測の合計ステ入力（total_override）が最優先、曲線が無いキャラは従来どおり
+  assert.equal(statBase(ch, { stars: 14, boost: { strike_atk: 1000 }, total_override: { strike_atk: 300000 } }, 'strike_atk').total, 300000);
+  assert.equal(statBase({ stats: { strike_atk: 100000 } }, { stars: 14 }, 'strike_atk').total, 100000);
+});

@@ -585,6 +585,53 @@ export function scoreZenkaiCandidates({ battleMembers, candidates, weights, weig
  * 2. character.stats = 取り込みデータの Lv5000 完全限界突破時の基本値（❶ 相当・理論値）
  * 3. character.base_stats = 旧形式（合計ステ）
  */
+// ---------------------------------------------------------------- ★・ZENKAIレベルによるステータス（§51）
+//
+// 参照サイト（jp.dblegends.net）のステータス計算をそのまま移植する。ゲーム内部は 32bit 浮動小数で
+// 計算して切り捨てるので、Math.fround と Math.trunc で同じ丸めを再現する（1違いのズレを出さないため）。
+//   合計 = trunc((Lv補間(min,max,Lv) + ソウル + min) × (1 + 限界突破率[★]))
+//   ZENKAI覚醒時: (合計 − ソウル) と ソウル をそれぞれ倍率 pl で掛け直し、ex[ZENKAIレベル−1] を足す
+/** ★0〜14 の限界突破率（参照サイトの RR 表） */
+export const STAR_RATE = [0, 0.05, 0.1, 0.1, 0.15, 0.17, 0.17, 0.2, 0.23, 0.28, 0.3, 0.32, 0.34, 0.36, 0.36];
+export const CHAR_MAX_LEVEL = 5000;
+const fr = Math.fround, tr = Math.trunc;
+function levelStat(mn, mx, L) {
+  const lvl = fr(L), v8 = (L === 9999) ? 100.0 : tr(fr(lvl / 100.0));
+  const t1 = fr(fr(fr(lvl - 1.0) / 9998.0) * fr(mx - mn));
+  const t2 = fr(fr(fr(fr(mx) * 0.2) / 100.0) * fr(v8));
+  return tr(fr(t1 + t2));
+}
+const rankIt = (sum, stars) => tr(fr(fr(STAR_RATE[stars] * sum) + sum));
+const mul1e4 = (param, spec) => tr(fr(fr(spec * 0.0001) * param));
+
+/**
+ * 曲線データ（stat_curve）から、★・ZENKAIレベル・ソウルブースト込みの合計ステと内訳を出す。
+ * ブースト（ソウル＋ZENKAIの追加ステ）は能力補正%が掛からない部分として ❶ から分ける。
+ * @returns {{base, boost, total}|null}
+ */
+export function curveStat(character, my, stat) {
+  const cv = character.stat_curve;
+  if (!cv || !cv.max || !(Number(cv.max[stat]) > 0)) return null;
+  const mn = Number(cv.min?.[stat]) || 0, mx = Number(cv.max[stat]);
+  const stars = Math.max(0, Math.min(14, Math.round(Number(my?.stars ?? 7)) || 0));
+  const soul = Math.max(0, tr(Number(my?.boost?.[stat] ?? character.soul_max?.[stat] ?? 0) || 0));
+  let v = rankIt(levelStat(mn, mx, CHAR_MAX_LEVEL) + soul + mn, stars);
+  let boost = soul;
+  // ZENKAI覚醒は ★7 以上が前提（§38）。zenkai_level === 0 は利用者が明示的に切ったもの
+  const zLv = Math.max(0, Math.min(7, Math.round(Number(my?.zenkai_lv ?? ZENKAI_DEFAULT_LEVEL)) || 0));
+  const zk = character.zenkai && my?.zenkai_level !== 0 && stars >= ZENKAI_MIN_STARS && zLv >= 1
+    && Array.isArray(cv.ex) && cv.ex.length > 0;
+  if (zk) {
+    const pm = cv.pl && Number(cv.pl[stat]) > 0 ? Number(cv.pl[stat]) : null;
+    let r = v - soul, soul2 = soul;
+    if (pm) { r = mul1e4(r, pm); soul2 = mul1e4(soul, pm); }
+    const ex = Number(cv.ex[zLv - 1]?.[stat]) || 0;
+    v = r + soul2 + ex;
+    boost = soul2 + ex;
+  }
+  return { base: v - boost, boost, total: v };
+}
+
 export function statBase(character, my, stat) {
   // 擬似ステータス（体力被回復量など）: キャラの❶を持たないため仮想❶で評価する（§25）
   if (PSEUDO_STATS.includes(stat)) {
@@ -593,6 +640,9 @@ export function statBase(character, my, stat) {
   const boost = Number(my?.boost?.[stat]) || 0;
   const override = Number(my?.total_override?.[stat]) || 0;
   if (override > 0) return { base: override - boost, boost, total: override };
+  // ★・ZENKAIレベルを反映した計算（曲線データがあるキャラ — §51）
+  const cs = curveStat(character, my, stat);
+  if (cs) return cs;
   const v2 = Number(character.stats?.[stat]) || 0;
   if (v2 > 0) return { base: v2, boost, total: v2 + boost };
   const legacyTotal = Number(character.base_stats?.[stat]) || 0;
