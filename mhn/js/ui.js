@@ -1,5 +1,5 @@
 // 画面部品（アイコン・シート）
-import { ELEMENTS, WEAPON_TYPES, PART_NAMES } from './model.js?v=__V__';
+import { ELEMENTS, WEAPON_TYPES, PART_NAMES } from './model.js?v=9ba6098e';
 
 let UD = null;
 export function setUiData(d) { UD = d; }
